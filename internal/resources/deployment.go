@@ -143,9 +143,16 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars
 
 	// Add the shared gateway-bin emptyDir volume when sidecars are present.
 	// The gateway init container copies the binary here; all sidecars mount it.
+	// Also add a writable /tmp volume since the root filesystem is read-only.
 	if len(sidecars) > 0 {
 		volumes = append(volumes, corev1.Volume{
 			Name: "gateway-bin",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "tmp",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -414,6 +421,14 @@ func buildCapabilitySidecarContainer(agent *agentsv1alpha1.Agent, sidecar Capabi
 	// No need for path rewriting!
 	envVars = append(envVars, corev1.EnvVar{Name: "WORKSPACE_PATH", Value: "/data/workspace"})
 
+	// Set HOME and XDG_CONFIG_HOME to writable paths on the shared data volume.
+	// The root filesystem is read-only (hardened security context), so tools like
+	// glab, gh, git, helm etc. that write to $HOME/.config will fail without this.
+	envVars = append(envVars,
+		corev1.EnvVar{Name: "HOME", Value: "/data"},
+		corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/data/.config"},
+	)
+
 	// Add secret environment variables
 	for _, secret := range capability.Spec.Secrets {
 		envVars = append(envVars, corev1.EnvVar{
@@ -429,11 +444,12 @@ func buildCapabilitySidecarContainer(agent *agentsv1alpha1.Agent, sidecar Capabi
 		})
 	}
 
-	// Volume mounts - gateway binary, config and shared workspace
+	// Volume mounts - gateway binary, config, shared workspace, and writable tmp
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "gateway-bin", MountPath: "/gateway", ReadOnly: true},
 		{Name: "config-" + sidecar.Name, MountPath: "/etc/tool", ReadOnly: true},
 		{Name: "data", MountPath: "/data"}, // Share workspace with main container
+		{Name: "tmp", MountPath: "/tmp"},   // Writable tmp for tools (git, glab, etc.)
 	}
 
 	// Resource requirements
