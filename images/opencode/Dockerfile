@@ -20,9 +20,18 @@
 FROM alpine:3.21 AS downloader
 
 ARG OPENCODE_VERSION=v1.3.13
+ARG TARGETARCH
 
+# Map Docker TARGETARCH to OpenCode release naming:
+#   amd64 → x64-baseline-musl
+#   arm64 → arm64-musl
 RUN apk add --no-cache curl tar \
-    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64-baseline-musl.tar.gz" \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+         ARCH_SUFFIX="arm64-musl"; \
+       else \
+         ARCH_SUFFIX="x64-baseline-musl"; \
+       fi \
+    && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-${ARCH_SUFFIX}.tar.gz" \
        -o /tmp/opencode.tar.gz \
     && tar -xzf /tmp/opencode.tar.gz -C /tmp \
     && mv /tmp/opencode /usr/local/bin/opencode \
