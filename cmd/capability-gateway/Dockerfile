@@ -1,5 +1,7 @@
-# Build stage for capability-gateway
-FROM golang:1.25-alpine AS builder
+# Build stage — runs natively on the build host, cross-compiles for TARGETARCH
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -10,8 +12,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the capability-gateway binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o capability-gateway ./cmd/capability-gateway/main.go
+# Cross-compile for the target architecture
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -installsuffix cgo -o capability-gateway ./cmd/capability-gateway/main.go
 
 # Runtime stage — minimal image for the gateway binary.
 #

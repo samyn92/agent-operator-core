@@ -16,8 +16,8 @@
 # platforms that enforce image registry restrictions and read-only root
 # filesystems.
 
-# Stage 1: Download OpenCode binary
-FROM alpine:3.21 AS downloader
+# Stage 1: Download OpenCode binary — runs on build host, downloads for target arch
+FROM --platform=$BUILDPLATFORM alpine:3.21 AS downloader
 
 ARG OPENCODE_VERSION=v1.3.13
 ARG TARGETARCH
@@ -38,8 +38,8 @@ RUN apk add --no-cache curl tar \
     && chmod +x /usr/local/bin/opencode \
     && rm -rf /tmp/opencode*
 
-# Stage 2: Pre-cache npm packages that OpenCode installs at runtime
-FROM oven/bun:1.3-alpine AS deps
+# Stage 2: Pre-cache npm packages — runs on build host (node_modules are arch-independent)
+FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS deps
 
 # OpenCode runs `bun install` on first API call in two directories:
 #   1. Config dir (~/.config/opencode) - installs @opencode-ai/plugin

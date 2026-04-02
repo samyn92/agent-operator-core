@@ -1,5 +1,7 @@
-# Build stage
-FROM golang:1.25-alpine AS builder
+# Build stage — runs natively on the build host, cross-compiles for TARGETARCH
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -10,8 +12,8 @@ RUN go mod download
 # Copy source code
 COPY *.go ./
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o telegram-channel .
+# Cross-compile for the target architecture
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -installsuffix cgo -o telegram-channel .
 
 # Runtime stage
 FROM gcr.io/distroless/static:nonroot
