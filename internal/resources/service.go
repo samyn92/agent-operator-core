@@ -32,12 +32,6 @@ func AgentService(agent *agentsv1alpha1.Agent) *corev1.Service {
 			Selector: labels,
 			Ports:    ports,
 			Type:     corev1.ServiceTypeClusterIP,
-			// On dual-stack clusters the default ClusterIP may be IPv6, but OpenCode
-			// binds to 0.0.0.0 (IPv4). PreferDualStack with IPv4 first ensures the
-			// primary ClusterIP is IPv4 so clients can reach the server, while still
-			// allocating an IPv6 address for pods that prefer it.
-			IPFamilyPolicy: ipFamilyPolicyPtr(corev1.IPFamilyPolicyPreferDualStack),
-			IPFamilies:     []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol},
 		},
 	}
 }

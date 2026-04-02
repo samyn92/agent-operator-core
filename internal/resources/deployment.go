@@ -287,9 +287,6 @@ func buildOpencodeContainer(agent *agentsv1alpha1.Agent, image string, pullPolic
 	// This is a key security design principle of the operator
 
 	// Build args - always include serve command and port/hostname.
-	// The Service is configured with ipFamilyPolicy=PreferDualStack and
-	// ipFamilies=[IPv4, IPv6] so the primary ClusterIP is IPv4, matching
-	// this 0.0.0.0 bind address.
 	args := []string{"serve", "--port", "4096", "--hostname", "0.0.0.0"}
 
 	// Add logging flags if configured
@@ -671,9 +668,6 @@ func boolPtr(b bool) *bool { return &b }
 
 // int64Ptr returns a pointer to an int64 value.
 func int64Ptr(i int64) *int64 { return &i }
-
-// ipFamilyPolicyPtr returns a pointer to an IPFamilyPolicy value.
-func ipFamilyPolicyPtr(p corev1.IPFamilyPolicy) *corev1.IPFamilyPolicy { return &p }
 
 // hardenedSecurityContext returns a container-level SecurityContext that
 // satisfies common Kyverno/PSS policies on managed platforms:
