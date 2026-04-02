@@ -1,6 +1,6 @@
-# Binaries
-operator
-capability-gateway
+# Binaries (anchored to repo root so cmd/operator/ and cmd/capability-gateway/ are not ignored)
+/operator
+/capability-gateway
 *.exe
 *.dll
 *.so
