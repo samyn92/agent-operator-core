@@ -1,0 +1,18 @@
+apiVersion: v2
+name: agent-operator
+description: Kubernetes operator for deploying and managing OpenCode AI coding agents
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/samyn92/agent-operator
+sources:
+  - https://github.com/samyn92/agent-operator
+keywords:
+  - ai
+  - agent
+  - opencode
+  - kubernetes
+  - operator
+maintainers:
+  - name: samyn92
+    url: https://github.com/samyn92

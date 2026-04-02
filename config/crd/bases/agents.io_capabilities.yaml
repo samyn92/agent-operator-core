@@ -1,0 +1,752 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: capabilities.agents.io
+spec:
+  group: agents.io
+  names:
+    kind: Capability
+    listKind: CapabilityList
+    plural: capabilities
+    singular: capability
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Capability is the Schema for the capabilities API.
+          A Capability is a reusable extension that can be attached to Agents.
+          Capabilities define what an agent CAN DO, including tools, permissions, and guardrails.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CapabilitySpec defines the desired state of a Capability
+            properties:
+              audit:
+                default: false
+                description: Audit enables audit logging for capability usage.
+                type: boolean
+              container:
+                description: |-
+                  Container configures a sidecar container capability.
+                  Required when type is "Container".
+                properties:
+                  commandPrefix:
+                    description: |-
+                      CommandPrefix is prepended to commands before execution.
+                      For example, "kubectl " for kubectl, "gh " for GitHub CLI.
+                    type: string
+                  config:
+                    description: |-
+                      Config provides capability-specific configuration.
+                      Used for git repos, kubernetes namespaces, and other tool-specific settings.
+                    properties:
+                      git:
+                        description: Git configures git-specific settings.
+                        properties:
+                          author:
+                            description: Author configures the git author for commits.
+                            properties:
+                              email:
+                                description: Email is the author email for commits.
+                                type: string
+                              name:
+                                description: Name is the author name for commits.
+                                type: string
+                            required:
+                            - email
+                            - name
+                            type: object
+                          repositories:
+                            description: |-
+                              Repositories to pre-clone into the workspace.
+                              These are cloned when the capability pod starts.
+                              Agent can also clone additional repos on-demand.
+                            items:
+                              description: RepositoryConfig defines a git repository.
+                              properties:
+                                url:
+                                  description: URL is the repository URL (e.g., "github.com/myorg/myapp")
+                                  type: string
+                              required:
+                              - url
+                              type: object
+                            type: array
+                        type: object
+                      github:
+                        description: GitHub configures GitHub-specific settings.
+                        properties:
+                          repositories:
+                            description: |-
+                              Repositories to monitor or work with.
+                              Format: "owner/repo" (e.g., "kubernetes/kubernetes")
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      gitlab:
+                        description: GitLab configures GitLab-specific settings.
+                        properties:
+                          domain:
+                            default: gitlab.com
+                            description: |-
+                              Domain is the GitLab instance domain (e.g., "gitlab.example.com").
+                              Defaults to "gitlab.com" if not specified.
+                            type: string
+                          projects:
+                            description: |-
+                              Projects to monitor or work with.
+                              Format: "group/project" (e.g., "myorg/myapp")
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      helm:
+                        description: Helm configures Helm-specific settings.
+                        properties:
+                          allowWrite:
+                            default: false
+                            description: |-
+                              AllowWrite enables write operations (install, upgrade, rollback, uninstall).
+                              By default, only read operations are allowed (list, get, status, history).
+                            type: boolean
+                          allowedNamespaces:
+                            description: |-
+                              AllowedNamespaces restricts which namespaces the agent can view releases in.
+                              If empty, all namespaces are allowed (subject to RBAC).
+                            items:
+                              type: string
+                            type: array
+                          allowedReleases:
+                            description: |-
+                              AllowedReleases restricts which releases the agent can interact with.
+                              Supports glob patterns (e.g., "myapp-*", "staging-*").
+                              If empty, all releases are allowed (subject to RBAC).
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                      kubernetes:
+                        description: Kubernetes configures kubernetes-specific settings.
+                        properties:
+                          allowedNamespaces:
+                            description: |-
+                              AllowedNamespaces restricts which namespaces the capability can access.
+                              If empty, all namespaces are allowed (subject to RBAC).
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                    type: object
+                  containerType:
+                    description: ContainerType identifies the kind of container tool
+                      for UI display.
+                    enum:
+                    - kubernetes
+                    - helm
+                    - github
+                    - gitlab
+                    - git
+                    - custom
+                    type: string
+                  image:
+                    description: Image is the container image with the CLI tool (e.g.,
+                      "bitnami/kubectl:1.30")
+                    type: string
+                  serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the ServiceAccount for the sidecar container.
+                      This SA should have the RBAC permissions needed by the tool.
+                    type: string
+                  workspace:
+                    description: |-
+                      Workspace configures a workspace volume for this capability.
+                      Use this for capabilities that need persistent or ephemeral storage (e.g., git clones).
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled provisions a workspace volume for this
+                          capability.
+                        type: boolean
+                      persistent:
+                        default: false
+                        description: |-
+                          Persistent keeps the workspace across pod restarts.
+                          If false (default), uses ephemeral storage (emptyDir).
+                          If true, creates a PVC for the workspace.
+                        type: boolean
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 10Gi
+                        description: 'Size of the workspace volume (default: 10Gi)'
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                    type: object
+                required:
+                - image
+                type: object
+              description:
+                description: |-
+                  Description explains what this capability provides.
+                  Shown to the LLM to help it understand when to use this capability.
+                type: string
+              instructions:
+                description: |-
+                  Instructions are additional context injected into the agent's prompt.
+                  Use for usage tips, examples, or domain-specific guidance.
+                type: string
+              mcp:
+                description: |-
+                  MCP configures an MCP server connection capability.
+                  Required when type is "MCP".
+                properties:
+                  command:
+                    description: |-
+                      Command is the command and args to run for local/server MCP servers.
+                      Example: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/data"]
+                      Required when mode is "local" or "server".
+                    items:
+                      type: string
+                    type: array
+                  enabled:
+                    default: true
+                    description: Enabled controls whether this MCP server is active.
+                    type: boolean
+                  environment:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Environment variables passed to the MCP server process.
+                      For local mode: passed to the subprocess.
+                      For server mode: injected into the MCP server pod (NOT the agent pod).
+                      For remote mode: not applicable (use headers instead).
+                    type: object
+                  headers:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Headers are custom HTTP headers sent with requests to remote MCP servers.
+                      Useful for authentication tokens, API keys, etc.
+                    type: object
+                  mode:
+                    description: |-
+                      Mode is the MCP server connection mode.
+                      "local" runs the MCP server as a subprocess (command-based).
+                      "remote" connects to an external MCP server via HTTP URL.
+                      "server" deploys the MCP server as an operator-managed pod with credential isolation.
+                    enum:
+                    - local
+                    - remote
+                    - server
+                    type: string
+                  oauth:
+                    description: |-
+                      OAuth configures OAuth 2.0 authentication for remote MCP servers.
+                      Supports dynamic client registration (RFC 7591).
+                    properties:
+                      clientIdSecret:
+                        description: ClientIDSecret references a secret containing
+                          the OAuth client ID.
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      clientSecretSecret:
+                        description: ClientSecretSecret references a secret containing
+                          the OAuth client secret.
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      scope:
+                        description: Scope is the OAuth scope to request.
+                        type: string
+                    required:
+                    - clientIdSecret
+                    - clientSecretSecret
+                    type: object
+                  server:
+                    description: |-
+                      Server configures the operator-managed MCP server deployment.
+                      Only used when mode is "server".
+                    properties:
+                      image:
+                        description: |-
+                          Image is the container image for the MCP server.
+                          Must contain the MCP server binary/runtime.
+                          Example: "node:22-slim" (if using npx to run the server from Command)
+                          Example: "mcp/gitlab" (if using a pre-built Docker image)
+                        type: string
+                      port:
+                        default: 8080
+                        description: |-
+                          Port is the port the SSE bridge listens on inside the server pod.
+                          Defaults to 8080. The operator creates a Service on this port.
+                        format: int32
+                        type: integer
+                      resources:
+                        description: Resources defines compute resources for the MCP
+                          server pod.
+                        properties:
+                          claims:
+                            description: |-
+                              Claims lists the names of resources, defined in spec.resourceClaims,
+                              that are used by this container.
+
+                              This field depends on the
+                              DynamicResourceAllocation feature gate.
+
+                              This field is immutable. It can only be set for containers.
+                            items:
+                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                              properties:
+                                name:
+                                  description: |-
+                                    Name must match the name of one entry in pod.spec.resourceClaims of
+                                    the Pod where this field is used. It makes that resource available
+                                    inside a container.
+                                  type: string
+                                request:
+                                  description: |-
+                                    Request is the name chosen for a request in the referenced claim.
+                                    If empty, everything from the claim is made available, otherwise
+                                    only the result of this request.
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - name
+                            x-kubernetes-list-type: map
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Limits describes the maximum amount of compute resources allowed.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: |-
+                              Requests describes the minimum amount of compute resources required.
+                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                            type: object
+                        type: object
+                    required:
+                    - image
+                    type: object
+                  timeout:
+                    default: 10000
+                    description: Timeout is the connection/request timeout in milliseconds.
+                    format: int32
+                    type: integer
+                  url:
+                    description: |-
+                      URL is the endpoint URL for remote MCP servers.
+                      Example: "https://mcp.example.com/sse"
+                      Required when mode is "remote".
+                      For "server" mode, this is auto-populated by the operator — do not set it manually.
+                    type: string
+                required:
+                - mode
+                type: object
+              permissions:
+                description: |-
+                  Permissions defines the three-tier permission model for commands.
+                  For Container type: controls command allow/approve/deny patterns.
+                  For MCP type: controls which MCP tools can be invoked.
+                  For Skill/Tool/Plugin: controls execution permissions.
+                properties:
+                  allow:
+                    description: |-
+                      Allow lists command patterns that are automatically permitted.
+                      Patterns use glob syntax (e.g., "get *", "describe pod *").
+                    items:
+                      type: string
+                    type: array
+                  approve:
+                    description: |-
+                      Approve lists command patterns that require human approval before execution.
+                      When a command matches, the agent pauses and asks the user for permission.
+                    items:
+                      description: ApprovalRule defines a command pattern that requires
+                        human approval.
+                      properties:
+                        message:
+                          description: |-
+                            Message is shown to the user when requesting approval.
+                            Should explain what the command does and any risks.
+                          type: string
+                        pattern:
+                          description: Pattern is the glob pattern to match commands
+                            (e.g., "delete pod *").
+                          type: string
+                        severity:
+                          default: warning
+                          description: |-
+                            Severity indicates the risk level of the command.
+                            Affects how the approval dialog is displayed in the UI.
+                          enum:
+                          - info
+                          - warning
+                          - critical
+                          type: string
+                        timeout:
+                          default: 300
+                          description: |-
+                            Timeout is how long to wait for approval before auto-denying (in seconds).
+                            Default is 300 seconds (5 minutes).
+                          format: int32
+                          type: integer
+                      required:
+                      - pattern
+                      type: object
+                    type: array
+                  deny:
+                    description: |-
+                      Deny lists command patterns that are always blocked.
+                      Deny is checked first and always takes precedence.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              plugin:
+                description: |-
+                  Plugin configures an OpenCode Plugin capability.
+                  Required when type is "Plugin".
+                properties:
+                  code:
+                    description: |-
+                      Code is the inline TypeScript/JavaScript source code for the plugin.
+                      Should export a default plugin function.
+                      Either code, configMapRef, or package must be specified.
+                    type: string
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef references a ConfigMap containing the plugin source code.
+                      Either code, configMapRef, or package must be specified.
+                    properties:
+                      key:
+                        description: Key is the key in the ConfigMap
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  package:
+                    description: |-
+                      Package is an npm package name to install as a plugin.
+                      Example: "@company/opencode-plugin-audit"
+                      Either code, configMapRef, or package must be specified.
+                    type: string
+                type: object
+              rateLimit:
+                description: RateLimit configures rate limiting for this capability.
+                properties:
+                  requestsPerMinute:
+                    default: 60
+                    description: RequestsPerMinute is the maximum requests per minute.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              resources:
+                description: |-
+                  Resources defines compute resources for the capability.
+                  Primarily used for Container type (sidecar resource limits).
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              secrets:
+                description: |-
+                  Secrets are environment variables injected into the capability's context.
+                  For Container type: injected into the sidecar container.
+                  For MCP type: available as environment variables for local MCP servers.
+                  The agent never sees these credentials.
+                items:
+                  description: SecretEnvVar defines an environment variable from a
+                    secret
+                  properties:
+                    name:
+                      description: Name is the environment variable name
+                      type: string
+                    valueFrom:
+                      description: ValueFrom references the secret key
+                      properties:
+                        key:
+                          description: Key is the key in the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - valueFrom
+                  type: object
+                type: array
+              skill:
+                description: |-
+                  Skill configures an OpenCode Agent Skill capability.
+                  Required when type is "Skill".
+                properties:
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef references a ConfigMap containing the SKILL.md content.
+                      Either content or configMapRef must be specified.
+                    properties:
+                      key:
+                        description: Key is the key in the ConfigMap
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  content:
+                    description: |-
+                      Content is the inline SKILL.md content.
+                      Should include YAML frontmatter with name and description.
+                      Either content or configMapRef must be specified.
+                    type: string
+                type: object
+              tool:
+                description: |-
+                  Tool configures an OpenCode Custom Tool capability.
+                  Required when type is "Tool".
+                properties:
+                  code:
+                    description: |-
+                      Code is the inline TypeScript/JavaScript source code for the tool.
+                      Should export a default using tool() from @opencode-ai/plugin.
+                      Either code or configMapRef must be specified.
+                    type: string
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef references a ConfigMap containing the tool source code.
+                      Either code or configMapRef must be specified.
+                    properties:
+                      key:
+                        description: Key is the key in the ConfigMap
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                type: object
+              type:
+                description: |-
+                  Type identifies the kind of capability.
+                  Determines which sub-spec is active and how the capability integrates with the agent.
+                enum:
+                - Container
+                - MCP
+                - Skill
+                - Tool
+                - Plugin
+                type: string
+            required:
+            - description
+            - type
+            type: object
+          status:
+            description: CapabilityStatus defines the observed state of Capability
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: Phase is the current phase of the capability
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                type: string
+              usedBy:
+                description: UsedBy lists agents currently using this capability
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

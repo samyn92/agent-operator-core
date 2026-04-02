@@ -1,0 +1,38 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/samyn92/agent-operator
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Leader election (set to true for HA with multiple replicas)
+leaderElect: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Webhook server configuration
+webhook:
+  enabled: true
+  port: 9090
+  service:
+    type: ClusterIP
+    port: 9090
+    annotations: {}

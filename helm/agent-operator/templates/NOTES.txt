@@ -1,0 +1,25 @@
+Agent Operator has been installed.
+
+Namespace: {{ .Release.Namespace }}
+
+To verify the installation:
+
+  kubectl get deployment {{ include "agent-operator.fullname" . }} -n {{ .Release.Namespace }}
+
+To view operator logs:
+
+  kubectl logs -f -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "agent-operator.name" . }}
+
+Next steps:
+
+  1. Create a namespace for your agents:
+     kubectl create namespace agents
+
+  2. Create a secret with your LLM provider API key:
+     kubectl create secret generic anthropic-key \
+       --from-literal=api-key=<your-key> -n agents
+
+  3. Deploy an agent:
+     kubectl apply -f examples/simple-agent.yaml
+
+Documentation: https://github.com/samyn92/agent-operator

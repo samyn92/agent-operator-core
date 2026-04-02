@@ -1,0 +1,449 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: channels.agents.io
+spec:
+  group: agents.io
+  names:
+    kind: Channel
+    listKind: ChannelList
+    plural: channels
+    singular: channel
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.serviceURL
+      name: URL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Channel is the Schema for the channels API
+          Channels are the bridge between external platforms (Telegram, Slack, etc.) and Agents
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ChannelSpec defines the desired state of Channel
+            properties:
+              agentRef:
+                description: AgentRef references the Agent to forward messages to
+                type: string
+              github:
+                description: GitHub configuration (required when type=github)
+                properties:
+                  actions:
+                    description: |-
+                      Actions filters to specific actions within events
+                      Examples for pull_request: opened, closed, synchronize, reopened
+                    items:
+                      type: string
+                    type: array
+                  events:
+                    description: |-
+                      Events is the list of GitHub events to accept
+                      Examples: push, pull_request, issues, issue_comment, pull_request_review
+                      If empty, all events are accepted
+                    items:
+                      type: string
+                    type: array
+                  repos:
+                    description: |-
+                      Repos filters to specific repositories (format: "owner/repo")
+                      If empty, accepts webhooks from all repos
+                    items:
+                      type: string
+                    type: array
+                  tokenSecret:
+                    description: TokenSecret references the GitHub token for API access
+                      (for posting comments, etc.)
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  webhookSecret:
+                    description: WebhookSecret references the secret for GitHub webhook
+                      HMAC validation
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                type: object
+              gitlab:
+                description: GitLab configuration (required when type=gitlab)
+                properties:
+                  actions:
+                    description: |-
+                      Actions filters to specific actions within events
+                      Examples for merge_request: open, close, merge, update
+                    items:
+                      type: string
+                    type: array
+                  events:
+                    description: |-
+                      Events is the list of GitLab events to accept
+                      Examples: push, merge_request, issue, note, pipeline
+                      If empty, all events are accepted
+                    items:
+                      type: string
+                    type: array
+                  projects:
+                    description: |-
+                      Projects filters to specific projects (format: "group/project" or project ID)
+                      If empty, accepts webhooks from all projects
+                    items:
+                      type: string
+                    type: array
+                  tokenSecret:
+                    description: TokenSecret references the GitLab token for API access
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  webhookSecret:
+                    description: WebhookSecret references the secret for GitLab webhook
+                      token validation
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                type: object
+              image:
+                description: Image is the channel container image
+                type: string
+              imagePullPolicy:
+                default: IfNotPresent
+                description: ImagePullPolicy is the image pull policy
+                enum:
+                - Always
+                - Never
+                - IfNotPresent
+                type: string
+              replicas:
+                default: 1
+                description: Replicas is the number of channel instances
+                format: int32
+                type: integer
+              resources:
+                description: Resources defines compute resources for the channel pod
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              serviceAccountName:
+                description: ServiceAccountName is the service account to use
+                type: string
+              slack:
+                description: Slack configuration (required when type=slack)
+                properties:
+                  allowedChannels:
+                    description: AllowedChannels is a list of Slack channel IDs that
+                      can interact
+                    items:
+                      type: string
+                    type: array
+                  botTokenSecret:
+                    description: BotTokenSecret references the secret containing the
+                      Slack bot token
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  signingSecret:
+                    description: SigningSecret references the secret for verifying
+                      Slack requests
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - botTokenSecret
+                type: object
+              telegram:
+                description: Telegram configuration (required when type=telegram)
+                properties:
+                  allowedChats:
+                    description: |-
+                      AllowedChats is a list of Telegram chat IDs (groups/channels) that can interact
+                      If empty, all chats are allowed (not recommended for production)
+                    items:
+                      type: string
+                    type: array
+                  allowedUsers:
+                    description: |-
+                      AllowedUsers is a list of Telegram user IDs that can interact with the bot
+                      If empty, all users are allowed (not recommended for production)
+                    items:
+                      type: string
+                    type: array
+                  botTokenSecret:
+                    description: BotTokenSecret references the secret containing the
+                      Telegram bot token
+                    properties:
+                      key:
+                        description: Key is the key in the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - botTokenSecret
+                type: object
+              type:
+                description: Type is the channel type (telegram, slack, discord, github,
+                  gitlab, webhook)
+                enum:
+                - telegram
+                - slack
+                - discord
+                - github
+                - gitlab
+                - webhook
+                type: string
+              webhook:
+                description: Webhook configuration (for external access)
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations to add to the ingress
+                    type: object
+                  host:
+                    description: Host is the hostname for the webhook (e.g., "telegram-bot.example.com")
+                    type: string
+                  ingressClassName:
+                    description: IngressClassName is the ingress class to use
+                    type: string
+                  path:
+                    description: 'Path is the URL path for the webhook (default: /)'
+                    type: string
+                  tls:
+                    description: TLS configures TLS for the webhook
+                    properties:
+                      clusterIssuer:
+                        description: ClusterIssuer is the cert-manager ClusterIssuer
+                          to use
+                        type: string
+                      secretName:
+                        description: SecretName is the name of the TLS secret
+                        type: string
+                    type: object
+                required:
+                - host
+                type: object
+            required:
+            - agentRef
+            - image
+            - type
+            type: object
+          status:
+            description: ChannelStatus defines the observed state of Channel
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: Phase is the current phase of the channel
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                type: string
+              replicas:
+                description: Replicas is the number of ready replicas
+                format: int32
+                type: integer
+              serviceURL:
+                description: ServiceURL is the internal service URL for agents to
+                  connect
+                type: string
+              webhookURL:
+                description: WebhookURL is the external webhook URL (if configured)
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
