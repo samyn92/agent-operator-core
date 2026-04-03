@@ -21,7 +21,6 @@ var DangerousPatterns = []string{
 	">>",   // Append stdout
 	"<",    // Redirect stdin
 	"2>&1", // Redirect stderr
-	"&",    // Background
 	"\n",   // Newline
 	"\r",   // Carriage return
 	"${",   // Variable expansion
