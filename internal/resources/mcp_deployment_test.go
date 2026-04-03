@@ -380,6 +380,29 @@ func TestMCPServerDeployment_SecurityContext(t *testing.T) {
 }
 
 // =============================================================================
+// DEPLOYMENT — SERVICE ACCOUNT
+// =============================================================================
+
+func TestMCPServerDeployment_NoServiceAccount(t *testing.T) {
+	cap := newTestMCPCapability("git-mcp", "agents")
+	dep := MCPServerDeployment(cap)
+
+	if dep.Spec.Template.Spec.ServiceAccountName != "" {
+		t.Fatalf("expected empty ServiceAccountName, got %q", dep.Spec.Template.Spec.ServiceAccountName)
+	}
+}
+
+func TestMCPServerDeployment_WithServiceAccount(t *testing.T) {
+	cap := newTestMCPCapability("k8s-mcp", "agents")
+	cap.Spec.MCP.Server.ServiceAccountName = "k8s-readonly"
+	dep := MCPServerDeployment(cap)
+
+	if dep.Spec.Template.Spec.ServiceAccountName != "k8s-readonly" {
+		t.Fatalf("expected ServiceAccountName 'k8s-readonly', got %q", dep.Spec.Template.Spec.ServiceAccountName)
+	}
+}
+
+// =============================================================================
 // AGENT DEPLOYMENT — MCP WORKSPACE VOLUME MOUNTS
 // =============================================================================
 

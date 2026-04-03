@@ -249,6 +249,13 @@ type MCPServerDeploymentSpec struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
+	// ServiceAccountName is the ServiceAccount for the MCP server pod.
+	// Use this when the MCP server needs Kubernetes API access (e.g., kubectl, helm).
+	// The SA should have appropriate RBAC permissions for the server's operations.
+	// If not specified, the pod uses the namespace's default ServiceAccount.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
 	// Port is the port the SSE bridge listens on inside the server pod.
 	// Defaults to 8080. The operator creates a Service on this port.
 	// +kubebuilder:default=8080

@@ -404,8 +404,9 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					InitContainers: []corev1.Container{initContainer},
-					Containers:     []corev1.Container{mainContainer},
+					ServiceAccountName: server.ServiceAccountName,
+					InitContainers:     []corev1.Container{initContainer},
+					Containers:         []corev1.Container{mainContainer},
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: boolPtr(true),
 						RunAsUser:    int64Ptr(1000),
