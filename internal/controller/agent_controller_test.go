@@ -1023,3 +1023,118 @@ func TestUpdateStatusWaiting(t *testing.T) {
 		t.Fatalf("expected Pending phase, got %s", updated.Status.Phase)
 	}
 }
+
+// =============================================================================
+// extractRegistryCredentials TESTS
+// =============================================================================
+
+func TestExtractRegistryCredentials_SpecificKey(t *testing.T) {
+	secret := &corev1.Secret{
+		Data: map[string][]byte{
+			"token": []byte("my-token-123"),
+		},
+	}
+
+	creds, err := extractRegistryCredentials(secret, "token")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if creds.Password != "my-token-123" {
+		t.Fatalf("expected password 'my-token-123', got %q", creds.Password)
+	}
+	if creds.Username != "" {
+		t.Fatalf("expected empty username, got %q", creds.Username)
+	}
+}
+
+func TestExtractRegistryCredentials_SpecificKeyNotFound(t *testing.T) {
+	secret := &corev1.Secret{
+		Data: map[string][]byte{
+			"other-key": []byte("value"),
+		},
+	}
+
+	_, err := extractRegistryCredentials(secret, "token")
+	if err == nil {
+		t.Fatal("expected error for missing key")
+	}
+}
+
+func TestExtractRegistryCredentials_DockerConfigJSON(t *testing.T) {
+	dockerConfig := `{"auths":{"ghcr.io":{"username":"user","password":"pass123"}}}`
+	secret := &corev1.Secret{
+		Data: map[string][]byte{
+			".dockerconfigjson": []byte(dockerConfig),
+		},
+	}
+
+	creds, err := extractRegistryCredentials(secret, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if creds.Username != "user" {
+		t.Fatalf("expected username 'user', got %q", creds.Username)
+	}
+	if creds.Password != "pass123" {
+		t.Fatalf("expected password 'pass123', got %q", creds.Password)
+	}
+}
+
+func TestExtractRegistryCredentials_PlainUsernamePassword(t *testing.T) {
+	secret := &corev1.Secret{
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("secret"),
+		},
+	}
+
+	creds, err := extractRegistryCredentials(secret, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if creds.Username != "admin" {
+		t.Fatalf("expected username 'admin', got %q", creds.Username)
+	}
+	if creds.Password != "secret" {
+		t.Fatalf("expected password 'secret', got %q", creds.Password)
+	}
+}
+
+func TestExtractRegistryCredentials_NoRecognizableCredentials(t *testing.T) {
+	secret := &corev1.Secret{
+		Data: map[string][]byte{
+			"something-else": []byte("value"),
+		},
+	}
+
+	_, err := extractRegistryCredentials(secret, "")
+	if err == nil {
+		t.Fatal("expected error for unrecognizable credentials")
+	}
+}
+
+func TestParseDockerConfigJSON_Valid(t *testing.T) {
+	data := []byte(`{"auths":{"registry.example.com":{"username":"u","password":"p"}}}`)
+
+	creds, err := parseDockerConfigJSON(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if creds.Username != "u" || creds.Password != "p" {
+		t.Fatalf("unexpected credentials: %+v", creds)
+	}
+}
+
+func TestParseDockerConfigJSON_InvalidJSON(t *testing.T) {
+	_, err := parseDockerConfigJSON([]byte("not json"))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestParseDockerConfigJSON_EmptyAuths(t *testing.T) {
+	_, err := parseDockerConfigJSON([]byte(`{"auths":{}}`))
+	if err == nil {
+		t.Fatal("expected error for empty auths")
+	}
+}

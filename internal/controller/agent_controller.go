@@ -24,6 +24,7 @@ import (
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
 	"github.com/samyn92/agent-operator-core/internal/resources"
+	"github.com/samyn92/agent-operator-core/pkg/oci"
 )
 
 // AgentReconciler reconciles an Agent object
@@ -165,6 +166,7 @@ type ResolvedCapabilities struct {
 // resolveCapabilities resolves all Agent capabilityRefs into their respective types.
 // Returns a ResolvedCapabilities struct with all information needed for config and deployment generation.
 func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agentsv1alpha1.Agent) (*ResolvedCapabilities, error) {
+	logger := log.FromContext(ctx)
 	resolved := &ResolvedCapabilities{
 		MCPEntries:  make(map[string]resources.MCPEntry),
 		SkillFiles:  make(map[string]string),
@@ -228,6 +230,15 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 						content = cm.Data[cmRef.Key]
 					}
 				}
+				if content == "" && capability.Spec.Skill.OCIRef != nil {
+					// Resolve from OCI artifact
+					var err error
+					content, err = r.resolveOCISkillContent(ctx, agent.Namespace, capability.Spec.Skill.OCIRef)
+					if err != nil {
+						logger.Error(err, "Failed to pull skill from OCI artifact", "capability", capability.Name, "ref", capability.Spec.Skill.OCIRef.Ref)
+						continue
+					}
+				}
 				if content != "" {
 					resolved.SkillFiles[name] = content
 				}
@@ -241,6 +252,15 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 					cmRef := capability.Spec.Tool.ConfigMapRef
 					if err := r.Get(ctx, types.NamespacedName{Name: cmRef.Name, Namespace: agent.Namespace}, cm); err == nil {
 						code = cm.Data[cmRef.Key]
+					}
+				}
+				if code == "" && capability.Spec.Tool.OCIRef != nil {
+					// Resolve from OCI artifact
+					var err error
+					code, err = r.resolveOCIFileContent(ctx, agent.Namespace, capability.Spec.Tool.OCIRef)
+					if err != nil {
+						logger.Error(err, "Failed to pull tool from OCI artifact", "capability", capability.Name, "ref", capability.Spec.Tool.OCIRef.Ref)
+						continue
 					}
 				}
 				if code != "" {
@@ -261,6 +281,15 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 							code = cm.Data[cmRef.Key]
 						}
 					}
+					if code == "" && capability.Spec.Plugin.OCIRef != nil {
+						// Resolve from OCI artifact
+						var err error
+						code, err = r.resolveOCIFileContent(ctx, agent.Namespace, capability.Spec.Plugin.OCIRef)
+						if err != nil {
+							logger.Error(err, "Failed to pull plugin from OCI artifact", "capability", capability.Name, "ref", capability.Spec.Plugin.OCIRef.Ref)
+							continue
+						}
+					}
 					if code != "" {
 						resolved.PluginFiles[name] = code
 					}
@@ -270,6 +299,174 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 	}
 
 	return resolved, nil
+}
+
+// resolveOCISkillContent pulls a Skill from an OCI artifact and returns its SKILL.md content.
+func (r *AgentReconciler) resolveOCISkillContent(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) (string, error) {
+	// Verify signature before pulling content, if verification is configured
+	if err := r.verifyOCIArtifact(ctx, namespace, ociRef); err != nil {
+		return "", fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	opts, err := r.buildOCIPullOptions(ctx, namespace, ociRef)
+	if err != nil {
+		return "", err
+	}
+
+	client := oci.NewClient()
+	return client.PullSkillContent(ctx, opts)
+}
+
+// resolveOCIFileContent pulls a Tool or Plugin from an OCI artifact and returns its file content.
+func (r *AgentReconciler) resolveOCIFileContent(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) (string, error) {
+	// Verify signature before pulling content, if verification is configured
+	if err := r.verifyOCIArtifact(ctx, namespace, ociRef); err != nil {
+		return "", fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	opts, err := r.buildOCIPullOptions(ctx, namespace, ociRef)
+	if err != nil {
+		return "", err
+	}
+
+	client := oci.NewClient()
+	return client.PullFileContent(ctx, opts)
+}
+
+// verifyOCIArtifact performs Cosign signature verification if the OCIRef has verification configured.
+// Returns nil if no verification is configured or if verification succeeds.
+func (r *AgentReconciler) verifyOCIArtifact(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) error {
+	if ociRef.Verify == nil {
+		return nil // No verification configured
+	}
+
+	verifier, err := oci.NewVerifier()
+	if err != nil {
+		return fmt.Errorf("cosign not available: %w", err)
+	}
+
+	verifyOpts := oci.VerifyOptions{
+		Ref: ociRef.Ref,
+	}
+
+	// Resolve public key from Secret if specified
+	if ociRef.Verify.PublicKey != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      ociRef.Verify.PublicKey.Name,
+			Namespace: namespace,
+		}, secret); err != nil {
+			return fmt.Errorf("failed to get cosign public key secret %s: %w", ociRef.Verify.PublicKey.Name, err)
+		}
+		key := ociRef.Verify.PublicKey.Key
+		if key == "" {
+			key = "cosign.pub"
+		}
+		pubKeyData, ok := secret.Data[key]
+		if !ok {
+			return fmt.Errorf("key %q not found in cosign public key secret %s", key, ociRef.Verify.PublicKey.Name)
+		}
+		verifyOpts.PublicKey = string(pubKeyData)
+	}
+
+	// Configure keyless verification if specified
+	if ociRef.Verify.Keyless != nil {
+		verifyOpts.Keyless = &oci.KeylessVerifyOptions{
+			Issuer:   ociRef.Verify.Keyless.Issuer,
+			Identity: ociRef.Verify.Keyless.Identity,
+		}
+	}
+
+	return verifier.Verify(ctx, verifyOpts)
+}
+
+// buildOCIPullOptions constructs PullOptions from an OCIArtifactRef, resolving credentials from Kubernetes Secrets.
+func (r *AgentReconciler) buildOCIPullOptions(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) (oci.PullOptions, error) {
+	opts := oci.PullOptions{
+		Ref:    ociRef.Ref,
+		Digest: ociRef.Digest,
+	}
+
+	// Resolve pull secret credentials if specified
+	if ociRef.PullSecret != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      ociRef.PullSecret.Name,
+			Namespace: namespace,
+		}, secret); err != nil {
+			return opts, fmt.Errorf("failed to get pull secret %s: %w", ociRef.PullSecret.Name, err)
+		}
+
+		// Try to extract credentials from the secret.
+		// Support both kubernetes.io/dockerconfigjson format and plain username/password keys.
+		creds, err := extractRegistryCredentials(secret, ociRef.PullSecret.Key)
+		if err != nil {
+			return opts, fmt.Errorf("failed to extract credentials from secret %s: %w", ociRef.PullSecret.Name, err)
+		}
+		opts.Credentials = creds
+	}
+
+	return opts, nil
+}
+
+// extractRegistryCredentials extracts registry credentials from a Kubernetes Secret.
+// Supports:
+//   - kubernetes.io/dockerconfigjson secrets (reads .dockerconfigjson)
+//   - Plain secrets with "username" and "password" keys
+//   - A specific key (token-based auth: password-only)
+func extractRegistryCredentials(secret *corev1.Secret, key string) (*oci.Credentials, error) {
+	// If a specific key is provided, use it as a token/password
+	if key != "" {
+		if val, ok := secret.Data[key]; ok {
+			return &oci.Credentials{Password: string(val)}, nil
+		}
+		return nil, fmt.Errorf("key %q not found in secret", key)
+	}
+
+	// Try dockerconfigjson format
+	if dockerConfig, ok := secret.Data[".dockerconfigjson"]; ok {
+		return parseDockerConfigJSON(dockerConfig)
+	}
+
+	// Try plain username/password
+	username := string(secret.Data["username"])
+	password := string(secret.Data["password"])
+	if password != "" {
+		return &oci.Credentials{Username: username, Password: password}, nil
+	}
+
+	return nil, fmt.Errorf("no recognizable credentials found in secret (expected .dockerconfigjson, or username/password keys)")
+}
+
+// dockerConfigJSON represents the structure of a .dockerconfigjson file.
+type dockerConfigJSON struct {
+	Auths map[string]dockerAuthEntry `json:"auths"`
+}
+
+type dockerAuthEntry struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Auth     string `json:"auth"`
+}
+
+// parseDockerConfigJSON extracts credentials from a .dockerconfigjson formatted secret.
+// Returns the first set of credentials found (registries are typically single-entry for pull secrets).
+func parseDockerConfigJSON(data []byte) (*oci.Credentials, error) {
+	var config dockerConfigJSON
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parsing dockerconfigjson: %w", err)
+	}
+
+	for _, entry := range config.Auths {
+		if entry.Username != "" || entry.Password != "" {
+			return &oci.Credentials{
+				Username: entry.Username,
+				Password: entry.Password,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no credentials found in dockerconfigjson")
 }
 
 // checkCapabilityReadiness checks whether all referenced capabilities exist and are Ready.

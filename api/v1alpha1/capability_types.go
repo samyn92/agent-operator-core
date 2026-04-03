@@ -285,14 +285,21 @@ type MCPOAuthConfig struct {
 type SkillCapabilitySpec struct {
 	// Content is the inline SKILL.md content.
 	// Should include YAML frontmatter with name and description.
-	// Either content or configMapRef must be specified.
+	// Exactly one of content, configMapRef, or ociRef must be specified.
 	// +optional
 	Content string `json:"content,omitempty"`
 
 	// ConfigMapRef references a ConfigMap containing the SKILL.md content.
-	// Either content or configMapRef must be specified.
+	// Exactly one of content, configMapRef, or ociRef must be specified.
 	// +optional
 	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
+
+	// OCIRef references an OCI artifact containing the SKILL.md content.
+	// The artifact must conform to the Agent Skills OCI Artifacts spec
+	// (application/vnd.agentskills.skill.v1 artifact type).
+	// Exactly one of content, configMapRef, or ociRef must be specified.
+	// +optional
+	OCIRef *OCIArtifactRef `json:"ociRef,omitempty"`
 }
 
 // =============================================================================
@@ -305,14 +312,20 @@ type SkillCapabilitySpec struct {
 type ToolCapabilitySpec struct {
 	// Code is the inline TypeScript/JavaScript source code for the tool.
 	// Should export a default using tool() from @opencode-ai/plugin.
-	// Either code or configMapRef must be specified.
+	// Exactly one of code, configMapRef, or ociRef must be specified.
 	// +optional
 	Code string `json:"code,omitempty"`
 
 	// ConfigMapRef references a ConfigMap containing the tool source code.
-	// Either code or configMapRef must be specified.
+	// Exactly one of code, configMapRef, or ociRef must be specified.
 	// +optional
 	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
+
+	// OCIRef references an OCI artifact containing the tool source code.
+	// The artifact should contain a single .ts/.js file as a layer.
+	// Exactly one of code, configMapRef, or ociRef must be specified.
+	// +optional
+	OCIRef *OCIArtifactRef `json:"ociRef,omitempty"`
 }
 
 // =============================================================================
@@ -325,25 +338,105 @@ type ToolCapabilitySpec struct {
 type PluginCapabilitySpec struct {
 	// Code is the inline TypeScript/JavaScript source code for the plugin.
 	// Should export a default plugin function.
-	// Either code, configMapRef, or package must be specified.
+	// Exactly one of code, configMapRef, package, or ociRef must be specified.
 	// +optional
 	Code string `json:"code,omitempty"`
 
 	// ConfigMapRef references a ConfigMap containing the plugin source code.
-	// Either code, configMapRef, or package must be specified.
+	// Exactly one of code, configMapRef, package, or ociRef must be specified.
 	// +optional
 	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
 
 	// Package is an npm package name to install as a plugin.
 	// Example: "@company/opencode-plugin-audit"
-	// Either code, configMapRef, or package must be specified.
+	// Exactly one of code, configMapRef, package, or ociRef must be specified.
 	// +optional
 	Package string `json:"package,omitempty"`
+
+	// OCIRef references an OCI artifact containing the plugin source code.
+	// The artifact should contain a single .ts/.js file as a layer.
+	// Exactly one of code, configMapRef, package, or ociRef must be specified.
+	// +optional
+	OCIRef *OCIArtifactRef `json:"ociRef,omitempty"`
 }
 
 // =============================================================================
 // SHARED TYPES
 // =============================================================================
+
+// OCIArtifactRef references an OCI artifact in a container registry.
+// Used to source Skill, Tool, and Plugin content from OCI-compliant registries.
+// Follows the Agent Skills as OCI Artifacts specification by Thomas Vitale.
+//
+// The artifact is pulled at reconciliation time and its content is extracted
+// into the agent's ConfigMap, just like inline content or ConfigMap references.
+// This enables versioned, signed, and discoverable distribution of agent capabilities.
+type OCIArtifactRef struct {
+	// Ref is the OCI artifact reference (e.g., "ghcr.io/org/skills/my-skill:1.0.0").
+	// Follows the standard OCI reference format: <registry>/<repository>:<tag> or
+	// <registry>/<repository>@<digest>.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Ref string `json:"ref"`
+
+	// Digest is an optional content digest for immutable pinning.
+	// When specified, the artifact is verified against this digest after pull.
+	// Format: <algorithm>:<hex> (e.g., "sha256:abc123...").
+	// If both tag (in ref) and digest are specified, digest takes precedence for verification.
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
+	// PullSecret references a Kubernetes Secret containing registry credentials.
+	// The secret should contain a .dockerconfigjson key (type kubernetes.io/dockerconfigjson)
+	// or individual username/password keys.
+	// If not specified, the artifact is pulled anonymously (public registries).
+	// +optional
+	PullSecret *SecretKeySelector `json:"pullSecret,omitempty"`
+
+	// Verify configures optional Cosign signature verification.
+	// When specified, the artifact's signature is verified before the content is used.
+	// If verification fails, the capability enters a Failed phase.
+	// +optional
+	Verify *OCIVerification `json:"verify,omitempty"`
+}
+
+// OCIVerification configures Cosign signature verification for an OCI artifact.
+// Ensures supply-chain integrity by verifying the artifact was signed by a trusted party.
+type OCIVerification struct {
+	// Provider is the signature verification provider.
+	// Currently only "cosign" is supported.
+	// +kubebuilder:validation:Enum=cosign
+	// +kubebuilder:default=cosign
+	// +optional
+	Provider string `json:"provider,omitempty"`
+
+	// PublicKey references a Secret containing the Cosign public key (PEM format).
+	// Used for key-based verification (cosign verify --key).
+	// Exactly one of publicKey or keyless must be specified.
+	// +optional
+	PublicKey *SecretKeySelector `json:"publicKey,omitempty"`
+
+	// Keyless configures keyless (OIDC-based) Cosign verification.
+	// Verifies the artifact was signed by a specific identity via an OIDC issuer.
+	// Exactly one of publicKey or keyless must be specified.
+	// +optional
+	Keyless *CosignKeylessVerification `json:"keyless,omitempty"`
+}
+
+// CosignKeylessVerification configures Cosign keyless verification using OIDC identity.
+// This verifies the artifact was signed by a specific identity (e.g., a GitHub Actions workflow)
+// via a trusted OIDC issuer (e.g., Fulcio + Sigstore).
+type CosignKeylessVerification struct {
+	// Issuer is the expected OIDC issuer URL.
+	// Example: "https://token.actions.githubusercontent.com" for GitHub Actions.
+	// +kubebuilder:validation:Required
+	Issuer string `json:"issuer"`
+
+	// Identity is the expected signing identity (email or URI).
+	// Example: "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0"
+	// +kubebuilder:validation:Required
+	Identity string `json:"identity"`
+}
 
 // ConfigMapKeyRef references a key in a ConfigMap
 type ConfigMapKeyRef struct {

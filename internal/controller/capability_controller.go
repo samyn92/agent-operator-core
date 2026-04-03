@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -290,8 +291,13 @@ func (r *CapabilityReconciler) validateSkillCapability(capability *agentsv1alpha
 	if capability.Spec.Skill == nil {
 		return fmt.Errorf("spec.skill is required when type is Skill")
 	}
-	if capability.Spec.Skill.Content == "" && capability.Spec.Skill.ConfigMapRef == nil {
-		return fmt.Errorf("spec.skill.content or spec.skill.configMapRef is required")
+	if capability.Spec.Skill.Content == "" && capability.Spec.Skill.ConfigMapRef == nil && capability.Spec.Skill.OCIRef == nil {
+		return fmt.Errorf("spec.skill.content, spec.skill.configMapRef, or spec.skill.ociRef is required")
+	}
+	if capability.Spec.Skill.OCIRef != nil {
+		if err := validateOCIRef(capability.Spec.Skill.OCIRef); err != nil {
+			return fmt.Errorf("spec.skill.ociRef: %w", err)
+		}
 	}
 	return nil
 }
@@ -300,8 +306,13 @@ func (r *CapabilityReconciler) validateToolCapability(capability *agentsv1alpha1
 	if capability.Spec.Tool == nil {
 		return fmt.Errorf("spec.tool is required when type is Tool")
 	}
-	if capability.Spec.Tool.Code == "" && capability.Spec.Tool.ConfigMapRef == nil {
-		return fmt.Errorf("spec.tool.code or spec.tool.configMapRef is required")
+	if capability.Spec.Tool.Code == "" && capability.Spec.Tool.ConfigMapRef == nil && capability.Spec.Tool.OCIRef == nil {
+		return fmt.Errorf("spec.tool.code, spec.tool.configMapRef, or spec.tool.ociRef is required")
+	}
+	if capability.Spec.Tool.OCIRef != nil {
+		if err := validateOCIRef(capability.Spec.Tool.OCIRef); err != nil {
+			return fmt.Errorf("spec.tool.ociRef: %w", err)
+		}
 	}
 	return nil
 }
@@ -310,8 +321,29 @@ func (r *CapabilityReconciler) validatePluginCapability(capability *agentsv1alph
 	if capability.Spec.Plugin == nil {
 		return fmt.Errorf("spec.plugin is required when type is Plugin")
 	}
-	if capability.Spec.Plugin.Code == "" && capability.Spec.Plugin.ConfigMapRef == nil && capability.Spec.Plugin.Package == "" {
-		return fmt.Errorf("spec.plugin.code, spec.plugin.configMapRef, or spec.plugin.package is required")
+	if capability.Spec.Plugin.Code == "" && capability.Spec.Plugin.ConfigMapRef == nil && capability.Spec.Plugin.Package == "" && capability.Spec.Plugin.OCIRef == nil {
+		return fmt.Errorf("spec.plugin.code, spec.plugin.configMapRef, spec.plugin.package, or spec.plugin.ociRef is required")
+	}
+	if capability.Spec.Plugin.OCIRef != nil {
+		if err := validateOCIRef(capability.Spec.Plugin.OCIRef); err != nil {
+			return fmt.Errorf("spec.plugin.ociRef: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateOCIRef validates the common OCIArtifactRef fields.
+func validateOCIRef(ref *agentsv1alpha1.OCIArtifactRef) error {
+	if ref.Ref == "" {
+		return fmt.Errorf("ref is required")
+	}
+	// Basic OCI reference format validation: must contain at least one "/"
+	if !strings.Contains(ref.Ref, "/") {
+		return fmt.Errorf("ref %q is not a valid OCI reference (expected format: <registry>/<repository>:<tag>)", ref.Ref)
+	}
+	// Validate digest format if specified
+	if ref.Digest != "" && !strings.Contains(ref.Digest, ":") {
+		return fmt.Errorf("digest %q is not valid (expected format: <algorithm>:<hex>)", ref.Digest)
 	}
 	return nil
 }

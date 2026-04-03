@@ -546,6 +546,160 @@ func TestValidatePluginCapability_NoCodeRefOrPackage(t *testing.T) {
 	}
 }
 
+// --- OCI Ref validation tests ---
+
+func TestValidateSkillCapability_ValidOCIRef(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeSkill,
+			Description: "Skill from OCI artifact",
+			Skill: &agentsv1alpha1.SkillCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref: "ghcr.io/org/skills/incident-response:1.0.0",
+				},
+			},
+		},
+	}
+
+	if err := r.validateCapability(cap); err != nil {
+		t.Fatalf("expected no error, got: %s", err)
+	}
+}
+
+func TestValidateSkillCapability_ValidOCIRefWithDigest(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeSkill,
+			Description: "Skill pinned by digest",
+			Skill: &agentsv1alpha1.SkillCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref:    "ghcr.io/org/skills/incident-response:1.0.0",
+					Digest: "sha256:abc123def456",
+				},
+			},
+		},
+	}
+
+	if err := r.validateCapability(cap); err != nil {
+		t.Fatalf("expected no error, got: %s", err)
+	}
+}
+
+func TestValidateSkillCapability_OCIRefInvalidFormat(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeSkill,
+			Description: "Bad ref",
+			Skill: &agentsv1alpha1.SkillCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref: "no-slash-in-ref",
+				},
+			},
+		},
+	}
+
+	err := r.validateCapability(cap)
+	if err == nil {
+		t.Fatal("expected error for invalid OCI ref format")
+	}
+}
+
+func TestValidateSkillCapability_OCIRefInvalidDigest(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeSkill,
+			Description: "Bad digest",
+			Skill: &agentsv1alpha1.SkillCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref:    "ghcr.io/org/skills/test:1.0",
+					Digest: "invalid-digest-no-colon",
+				},
+			},
+		},
+	}
+
+	err := r.validateCapability(cap)
+	if err == nil {
+		t.Fatal("expected error for invalid digest format")
+	}
+}
+
+func TestValidateToolCapability_ValidOCIRef(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeTool,
+			Description: "Tool from OCI artifact",
+			Tool: &agentsv1alpha1.ToolCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref: "ghcr.io/org/tools/health-check:latest",
+				},
+			},
+		},
+	}
+
+	if err := r.validateCapability(cap); err != nil {
+		t.Fatalf("expected no error, got: %s", err)
+	}
+}
+
+func TestValidatePluginCapability_ValidOCIRef(t *testing.T) {
+	r := &CapabilityReconciler{}
+	cap := &agentsv1alpha1.Capability{
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypePlugin,
+			Description: "Plugin from OCI artifact",
+			Plugin: &agentsv1alpha1.PluginCapabilitySpec{
+				OCIRef: &agentsv1alpha1.OCIArtifactRef{
+					Ref: "ghcr.io/org/plugins/audit:2.0.0",
+				},
+			},
+		},
+	}
+
+	if err := r.validateCapability(cap); err != nil {
+		t.Fatalf("expected no error, got: %s", err)
+	}
+}
+
+func TestValidateOCIRef_EmptyRef(t *testing.T) {
+	err := validateOCIRef(&agentsv1alpha1.OCIArtifactRef{Ref: ""})
+	if err == nil {
+		t.Fatal("expected error for empty ref")
+	}
+}
+
+func TestValidateOCIRef_NoSlash(t *testing.T) {
+	err := validateOCIRef(&agentsv1alpha1.OCIArtifactRef{Ref: "invalid"})
+	if err == nil {
+		t.Fatal("expected error for ref without slash")
+	}
+}
+
+func TestValidateOCIRef_InvalidDigest(t *testing.T) {
+	err := validateOCIRef(&agentsv1alpha1.OCIArtifactRef{
+		Ref:    "ghcr.io/org/test:1.0",
+		Digest: "nocolon",
+	})
+	if err == nil {
+		t.Fatal("expected error for digest without colon")
+	}
+}
+
+func TestValidateOCIRef_Valid(t *testing.T) {
+	err := validateOCIRef(&agentsv1alpha1.OCIArtifactRef{
+		Ref:    "ghcr.io/org/test:1.0",
+		Digest: "sha256:abc123",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %s", err)
+	}
+}
+
 // =============================================================================
 // RECONCILIATION TESTS (using fake client)
 // =============================================================================
