@@ -294,13 +294,9 @@ func TestSSEEndToEnd(t *testing.T) {
 		t.Fatalf("expected endpoint URL with sessionId, got %q", endpointURL)
 	}
 
-	// The endpoint URL has localhost:9999 (the config port), but we need to
-	// use the test server's actual URL. Extract the sessionId and rebuild.
-	parts := strings.SplitN(endpointURL, "/message?", 2)
-	if len(parts) != 2 {
-		t.Fatalf("unexpected endpoint URL format: %q", endpointURL)
-	}
-	messageURL := server.URL + "/message?" + parts[1]
+	// The endpoint URL is a relative path (e.g. /message?sessionId=session-1).
+	// Resolve it against the test server's URL to get the full POST URL.
+	messageURL := server.URL + endpointURL
 
 	// Send a JSON-RPC message
 	jsonRPC := `{"jsonrpc":"2.0","method":"initialize","id":1}`

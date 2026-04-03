@@ -122,10 +122,12 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Send the endpoint event — tells the client where to POST messages
-	// The endpoint URL includes the session ID for routing
-	port := h.config.Port
-	endpointURL := fmt.Sprintf("http://localhost:%d/message?sessionId=%s", port, id)
+	// Send the endpoint event — tells the client where to POST messages.
+	// Use a relative path so MCP clients resolve it against their connection URL.
+	// This is critical when the gateway runs in a different pod: if we sent an
+	// absolute http://localhost:PORT URL, the MCP SDK's same-origin check would
+	// reject it because the client connected via the Kubernetes service hostname.
+	endpointURL := fmt.Sprintf("/message?sessionId=%s", id)
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURL)
 	flusher.Flush()
 
