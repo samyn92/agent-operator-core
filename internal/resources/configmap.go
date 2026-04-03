@@ -14,8 +14,8 @@ import (
 )
 
 // HashConfigMapData computes a deterministic hash of a ConfigMap's data map.
-// Used by the deployment reconciler to compute the configmap-hash pod annotation
-// from the DESIRED data (avoiding API server read race conditions).
+// Previously used for the configmap-hash pod annotation to trigger rollouts.
+// Retained as a utility for comparing ConfigMap data in reconciliation logic.
 func HashConfigMapData(data map[string]string) string {
 	raw, err := json.Marshal(data)
 	if err != nil {

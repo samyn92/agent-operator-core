@@ -91,10 +91,11 @@ func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
 	return "" // Use default if no capability specifies a ServiceAccount
 }
 
-// AgentDeployment creates a Deployment for the agent
-// configMapHash should be the SHA256 hash of the ConfigMap data to trigger rollouts on config changes
-// sidecars contains resolved capability information for sidecar containers
-func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars []CapabilitySidecarInfo) *appsv1.Deployment {
+// AgentDeployment creates a Deployment for the agent.
+// sidecars contains resolved capability information for sidecar containers.
+// ConfigMap changes are propagated via Kubernetes volume updates and symlinks,
+// so no configmap hash is needed to trigger rollouts.
+func AgentDeployment(agent *agentsv1alpha1.Agent, sidecars []CapabilitySidecarInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
@@ -176,11 +177,15 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars
 	}
 	containers[0].Resources = resourceReqs
 
-	// Pod template annotations - include configmap hash to trigger rollout on config changes
+	// Pod template annotations
+	// Note: We intentionally do NOT include a configmap-hash annotation here.
+	// ConfigMap changes (permission rules, system prompt, etc.) are propagated
+	// to running pods via Kubernetes' native ConfigMap volume update mechanism
+	// (~60s kubelet sync period). The init container symlinks opencode.json and
+	// AGENTS.md to the ConfigMap mount, so updates are visible without restart.
+	// The capability-gateway sidecars use a ConfigWatcher (fsnotify) to detect
+	// and reload config changes from their ConfigMap mounts.
 	podAnnotations := map[string]string{}
-	if configMapHash != "" {
-		podAnnotations[ConfigMapHashAnnotation] = configMapHash
-	}
 
 	// Determine ServiceAccount - sidecars share the pod's SA
 	serviceAccountName := getServiceAccountName(sidecars)
@@ -564,8 +569,13 @@ func buildInitContainer(image string, pullPolicy corev1.PullPolicy) corev1.Conta
 				`mkdir -p /data/workspace && ` +
 				`mkdir -p /data/.config/opencode/.opencode/plugins && ` +
 				`mkdir -p /data/workspace/.opencode/tools /data/workspace/.opencode/skills || true; ` +
-				`cp /config/opencode.json /data/.config/opencode/opencode.json && ` +
-				`cp /config/AGENTS.md /data/workspace/AGENTS.md && ` +
+				// Symlink opencode.json and AGENTS.md instead of copying them.
+				// Kubernetes auto-updates ConfigMap volume mounts (~60s), and since
+				// these are symlinks, the running process sees updated content without
+				// a pod restart. This enables hot-reload of permission rules and
+				// system prompt changes when Capability CRDs are modified.
+				`ln -sf /config/opencode.json /data/.config/opencode/opencode.json && ` +
+				`ln -sf /config/AGENTS.md /data/workspace/AGENTS.md && ` +
 				`cp /config/telemetry.ts /data/.config/opencode/.opencode/plugins/telemetry.ts; ` +
 				`for f in /config/tool-*.ts; do [ -f "$f" ] && cp "$f" "/data/workspace/.opencode/tools/$(basename "$f" | sed 's/^tool-//')"; done; ` +
 				`for f in /config/plugin-*.ts; do [ -f "$f" ] && cp "$f" "/data/.config/opencode/.opencode/plugins/$(basename "$f" | sed 's/^plugin-//')"; done; ` +

@@ -411,16 +411,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, agent *agents
 		return fmt.Errorf("failed to resolve capabilities for deployment: %w", err)
 	}
 
-	// Compute ConfigMap hash from the DESIRED data (not from the API server).
-	// This avoids a race condition: on the first reconcile, the ConfigMap may not
-	// yet exist in the API server, producing an empty hash. On the second reconcile
-	// (triggered by the ConfigMap creation event), the hash changes, which changes
-	// the pod template annotation, which changes the DeploymentSpec hash, causing
-	// a spurious Deployment update and double rollout.
-	desiredConfigMap := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
-	configMapHash := resources.HashConfigMapData(desiredConfigMap.Data)
-
-	desired := resources.AgentDeployment(agent, configMapHash, resolved.Sidecars)
+	desired := resources.AgentDeployment(agent, resolved.Sidecars)
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}

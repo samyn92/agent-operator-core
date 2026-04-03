@@ -42,10 +42,11 @@ type ExecResponse struct {
 
 // Handler implements the CLI gateway mode.
 type Handler struct {
-	config  gateway.Config
-	logger  *slog.Logger
-	limiter *gateway.RateLimiter
-	audit   *gateway.AuditLogger
+	config        gateway.Config
+	logger        *slog.Logger
+	limiter       *gateway.RateLimiter
+	audit         *gateway.AuditLogger
+	configWatcher *gateway.ConfigWatcher // nil if no watcher configured
 }
 
 // NewHandler creates a CLI mode handler.
@@ -56,6 +57,23 @@ func NewHandler(config gateway.Config, logger *slog.Logger) *Handler {
 		limiter: gateway.NewRateLimiter(config.RateLimitRPM),
 		audit:   gateway.NewAuditLogger(logger, config.AuditEnabled),
 	}
+}
+
+// SetConfigWatcher attaches a ConfigWatcher for dynamic config reloading.
+// When set, the handler reads command-prefix from the watcher instead of the
+// static config, enabling hot-reload without pod restarts.
+func (h *Handler) SetConfigWatcher(cw *gateway.ConfigWatcher) {
+	h.configWatcher = cw
+}
+
+// commandPrefix returns the current command prefix. If a ConfigWatcher is
+// attached, the value is read dynamically (reflecting ConfigMap updates).
+// Otherwise, falls back to the static config loaded at startup.
+func (h *Handler) commandPrefix() string {
+	if h.configWatcher != nil {
+		return h.configWatcher.CommandPrefix()
+	}
+	return h.config.CommandPrefix
 }
 
 // Register adds CLI mode routes to the given mux.
@@ -109,22 +127,24 @@ func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: Handle command prefix enforcement
-	if h.config.CommandPrefix != "" {
-		prefix := h.config.CommandPrefix
+	// Read command prefix dynamically — may have been updated by ConfigWatcher
+	cmdPrefix := h.commandPrefix()
+	if cmdPrefix != "" {
+		prefix := cmdPrefix
 		if !strings.HasSuffix(prefix, " ") {
 			prefix += " "
 		}
 
 		if strings.HasPrefix(command, prefix) {
 			// Valid prefix — continue
-		} else if command == strings.TrimSpace(h.config.CommandPrefix) {
+		} else if command == strings.TrimSpace(cmdPrefix) {
 			// Just the command itself (e.g., "kubectl" alone)
 		} else {
 			h.logger.Warn("command missing required prefix",
 				"command", command,
-				"required_prefix", h.config.CommandPrefix,
+				"required_prefix", cmdPrefix,
 			)
-			h.sendError(w, http.StatusForbidden, fmt.Sprintf("command must start with %q", h.config.CommandPrefix))
+			h.sendError(w, http.StatusForbidden, fmt.Sprintf("command must start with %q", cmdPrefix))
 			return
 		}
 	}

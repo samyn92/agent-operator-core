@@ -70,6 +70,25 @@ func main() {
 		gateway.ConfigureGitAuth(logger)
 
 		handler := cli.NewHandler(config, logger)
+
+		// Start ConfigWatcher for hot-reloading ConfigMap changes (e.g., command-prefix).
+		// This allows permission and config updates to take effect without pod restarts.
+		// The watcher monitors the ConfigMap mount directory for Kubernetes symlink swaps.
+		if config.ConfigPath != "" {
+			cw, err := gateway.NewConfigWatcher(config.ConfigPath, logger)
+			if err != nil {
+				logger.Warn("failed to start config watcher, falling back to static config",
+					"path", config.ConfigPath,
+					"error", err,
+				)
+			} else {
+				cw.Start()
+				handler.SetConfigWatcher(cw)
+				defer cw.Stop()
+				logger.Info("config watcher started", "path", config.ConfigPath)
+			}
+		}
+
 		handler.Register(mux)
 
 		logger.Info("CLI mode active",
