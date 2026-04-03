@@ -390,6 +390,57 @@ spec:
                               More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                             type: object
                         type: object
+                      serviceAccountName:
+                        description: |-
+                          ServiceAccountName is the ServiceAccount for the MCP server pod.
+                          Use this when the MCP server needs Kubernetes API access (e.g., kubectl, helm).
+                          The SA should have appropriate RBAC permissions for the server's operations.
+                          If not specified, the pod uses the namespace's default ServiceAccount.
+                        type: string
+                      workspace:
+                        description: |-
+                          Workspace configures shared workspace access for the MCP server pod.
+                          When enabled, the MCP server pod mounts a PVC at /data/workspace, giving
+                          it filesystem access to the agent's working directory.
+
+                          This is essential for MCP servers that operate on the filesystem (e.g., git
+                          operations that need to add/commit/push files created by the agent).
+
+                          The PVC is shared between the agent pod and the MCP server pod:
+                            - AccessMode is ReadWriteMany (RWX), requiring an RWX-capable storage class
+                              (e.g., NFS, CephFS, Longhorn RWX).
+                            - The operator creates the PVC and mounts it in both pods automatically.
+                            - For clusters without RWX storage, use mode "local" instead (the MCP server
+                              runs as a subprocess in the agent pod, inheriting its filesystem).
+                        properties:
+                          enabled:
+                            default: false
+                            description: |-
+                              Enabled provisions a shared workspace PVC for this MCP server.
+                              The PVC is mounted at /data/workspace in both the MCP server pod and the agent pod.
+                            type: boolean
+                          mountPath:
+                            default: /data/workspace
+                            description: |-
+                              MountPath is the path where the workspace is mounted in the MCP server container.
+                              Defaults to "/data/workspace".
+                            type: string
+                          size:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            default: 10Gi
+                            description: 'Size of the shared workspace PVC (default:
+                              10Gi).'
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          storageClass:
+                            description: |-
+                              StorageClass is the storage class for the shared PVC.
+                              Must support ReadWriteMany (RWX) access mode (e.g., NFS, CephFS, Longhorn RWX).
+                              If not specified, the cluster's default storage class is used.
+                            type: string
+                        type: object
                     required:
                     - image
                     type: object
