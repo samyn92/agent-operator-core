@@ -92,10 +92,13 @@ func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
 }
 
 // AgentDeployment creates a Deployment for the agent.
-// sidecars contains resolved capability information for sidecar containers.
-// ConfigMap changes are propagated via Kubernetes volume updates and symlinks,
-// so no configmap hash is needed to trigger rollouts.
-func AgentDeployment(agent *agentsv1alpha1.Agent, sidecars []CapabilitySidecarInfo) *appsv1.Deployment {
+// configMapHash is the SHA256 hash of the ConfigMap data; when it changes the pod
+// template annotation changes, triggering a rolling restart so init-container
+// generated files (tool .ts, plugins, skills) are regenerated from the updated
+// ConfigMap. Symlinked files (opencode.json, AGENTS.md) would update via kubelet
+// volume propagation, but tool files are copied by the init container and require
+// a restart to pick up changes.
+func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars []CapabilitySidecarInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
@@ -177,15 +180,16 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, sidecars []CapabilitySidecarIn
 	}
 	containers[0].Resources = resourceReqs
 
-	// Pod template annotations
-	// Note: We intentionally do NOT include a configmap-hash annotation here.
-	// ConfigMap changes (permission rules, system prompt, etc.) are propagated
-	// to running pods via Kubernetes' native ConfigMap volume update mechanism
-	// (~60s kubelet sync period). The init container symlinks opencode.json and
-	// AGENTS.md to the ConfigMap mount, so updates are visible without restart.
-	// The capability-gateway sidecars use a ConfigWatcher (fsnotify) to detect
-	// and reload config changes from their ConfigMap mounts.
+	// Pod template annotations - include configmap hash to trigger rollout on config changes.
+	// While opencode.json and AGENTS.md are symlinked and auto-update via kubelet
+	// ConfigMap volume propagation (~60s), tool files (.ts), plugins, and skills are
+	// COPIED by the init container and only refresh on pod restart. The hash annotation
+	// ensures any Capability change (permissions, description, instructions) causes a
+	// rolling restart so all files are regenerated.
 	podAnnotations := map[string]string{}
+	if configMapHash != "" {
+		podAnnotations[ConfigMapHashAnnotation] = configMapHash
+	}
 
 	// Determine ServiceAccount - sidecars share the pod's SA
 	serviceAccountName := getServiceAccountName(sidecars)
