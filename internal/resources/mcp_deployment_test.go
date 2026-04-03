@@ -203,15 +203,15 @@ func TestMCPServerDeployment_Basic(t *testing.T) {
 		t.Fatalf("expected 1 container 'mcp-server', got %v", podSpec.Containers)
 	}
 
-	// Main container should have gateway-bin and gateway-config volume mounts (no workspace)
+	// Main container should have gateway-bin, gateway-config, data-home, and tmp volume mounts (always present)
 	mounts := podSpec.Containers[0].VolumeMounts
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 volume mounts (gateway-bin, gateway-config), got %d: %v", len(mounts), mountNames(mounts))
+	if len(mounts) != 4 {
+		t.Fatalf("expected 4 volume mounts (gateway-bin, gateway-config, data-home, tmp), got %d: %v", len(mounts), mountNames(mounts))
 	}
 
-	// 2 volumes: gateway-bin + gateway-config
-	if len(podSpec.Volumes) != 2 {
-		t.Fatalf("expected 2 volumes, got %d volumes", len(podSpec.Volumes))
+	// 4 volumes: gateway-bin + gateway-config + data-home + tmp
+	if len(podSpec.Volumes) != 4 {
+		t.Fatalf("expected 4 volumes, got %d volumes", len(podSpec.Volumes))
 	}
 
 	// No WORKSPACE_PATH env var
@@ -219,6 +219,17 @@ func TestMCPServerDeployment_Basic(t *testing.T) {
 		if env.Name == "WORKSPACE_PATH" {
 			t.Fatal("should NOT have WORKSPACE_PATH env var without workspace")
 		}
+	}
+
+	// HOME env var should always be set (writable HOME for npm cache, etc.)
+	var home string
+	for _, env := range podSpec.Containers[0].Env {
+		if env.Name == "HOME" {
+			home = env.Value
+		}
+	}
+	if home != "/data" {
+		t.Fatalf("expected HOME=/data even without workspace, got %q", home)
 	}
 }
 

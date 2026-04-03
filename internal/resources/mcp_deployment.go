@@ -218,6 +218,16 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		})
 	}
 
+	// All MCP server pods need a writable HOME directory because:
+	//   - node:22-slim images need /home/node/.npm for npx/npm cache
+	//   - Python images need writable temp space
+	//   - The readOnlyRootFilesystem security context blocks writes everywhere else
+	// We always set HOME=/data so tools write to the emptyDir, not the read-only rootfs.
+	envVars = append(envVars,
+		corev1.EnvVar{Name: "HOME", Value: "/data"},
+		corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/data/.config"},
+	)
+
 	// Workspace configuration — if enabled, mount the shared PVC in the MCP server container.
 	// This gives the MCP server filesystem access to the agent's working directory.
 	workspaceEnabled := MCPServerHasWorkspace(capability)
@@ -231,9 +241,6 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		// Many MCP servers use this to restrict operations to a specific directory.
 		envVars = append(envVars,
 			corev1.EnvVar{Name: "WORKSPACE_PATH", Value: workspaceMountPath},
-			// HOME must be writable for git config, npm cache, etc.
-			corev1.EnvVar{Name: "HOME", Value: "/data"},
-			corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/data/.config"},
 		)
 	}
 
@@ -255,10 +262,15 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 
 	// Init container: copy the capability-gateway binary from the gateway image
 	// into a shared volume that the main container can access.
+	//
+	// Uses PullAlways because the gateway image uses the :latest tag — without this,
+	// cached images prevent picking up fixes (e.g., endpoint URL fixes) unless
+	// nodes are manually cleared. The init container only runs once per pod creation,
+	// so the pull overhead is minimal.
 	initContainer := corev1.Container{
 		Name:            "init-gateway",
 		Image:           DefaultGatewayImage,
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: corev1.PullAlways,
 		Command:         []string{"cp", "/capability-gateway", "/gateway/capability-gateway"},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "gateway-bin", MountPath: "/gateway"},
@@ -278,18 +290,22 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 
 	// Main container: user's MCP server image + capability-gateway binary.
 	// The gateway spawns the MCP command as a subprocess and bridges stdio to SSE.
+	//
+	// All MCP pods get writable /data (HOME) and /tmp volumes because readOnlyRootFilesystem
+	// is true. Without these, npm/npx cache writes and Python temp files fail with ENOENT/EROFS.
 	mainVolumeMounts := []corev1.VolumeMount{
 		{Name: "gateway-bin", MountPath: "/gateway", ReadOnly: true},
 		// ConfigMap with deny rules, mounted at /etc/tool (the gateway's default ConfigPath).
 		// Hot-reloaded by ConfigWatcher — updates take effect without pod restart.
 		{Name: "gateway-config", MountPath: "/etc/tool", ReadOnly: true},
+		// Writable HOME for npm cache, git config, Python temp files, etc.
+		{Name: "data-home", MountPath: "/data", SubPath: "home"},
+		// Writable /tmp for general temp file usage
+		{Name: "tmp", MountPath: "/tmp"},
 	}
 	if workspaceEnabled {
 		mainVolumeMounts = append(mainVolumeMounts,
 			corev1.VolumeMount{Name: "workspace", MountPath: workspaceMountPath},
-			// Writable /data for HOME (git config, caches, etc.)
-			corev1.VolumeMount{Name: "data-home", MountPath: "/data", SubPath: "home"},
-			corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"},
 		)
 	}
 	mainContainer := corev1.Container{
@@ -326,7 +342,9 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		},
 	}
 
-	// Volumes — gateway binary (always) + config (always) + workspace volumes (if enabled)
+	// Volumes — gateway binary + config (always) + scratch dirs (always) + workspace PVC (if enabled).
+	// The data-home and tmp emptyDirs are always present because readOnlyRootFilesystem is true
+	// and all MCP server runtimes (Node.js npx, Python) need writable HOME and /tmp.
 	volumes := []corev1.Volume{
 		{
 			Name: "gateway-bin",
@@ -349,6 +367,20 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 				},
 			},
 		},
+		// Writable home directory for npm cache, git config, Python temp files, etc.
+		{
+			Name: "data-home",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		// Writable tmp for general temp file usage
+		{
+			Name: "tmp",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
 	}
 	if workspaceEnabled {
 		volumes = append(volumes,
@@ -359,20 +391,6 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 						ClaimName: MCPServerWorkspacePVCName(capability),
 					},
-				},
-			},
-			// Writable home directory for git config, npm cache, etc.
-			corev1.Volume{
-				Name: "data-home",
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			},
-			// Writable tmp for tools
-			corev1.Volume{
-				Name: "tmp",
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			},
 		)
