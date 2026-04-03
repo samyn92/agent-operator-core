@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -360,6 +361,17 @@ func (h *Handler) spawnMCPServer(ctx context.Context, id string) (*session, erro
 	}
 
 	cmd := exec.CommandContext(ctx, tokens[0], tokens[1:]...)
+
+	// Set the working directory for the subprocess to a writable path.
+	// Without this, the subprocess inherits the container's CWD (often the
+	// read-only root "/"), which breaks tools like pydantic-settings that try
+	// to stat(".env") in the current directory. We prefer HOME (which the
+	// operator sets to /data), falling back to /tmp as a safe writable default.
+	if home := os.Getenv("HOME"); home != "" {
+		cmd.Dir = home
+	} else {
+		cmd.Dir = "/tmp"
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

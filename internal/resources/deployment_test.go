@@ -206,7 +206,7 @@ func TestGetServiceAccountName_NilContainerSpec(t *testing.T) {
 func TestAgentDeployment_BasicStructure(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Name != "my-agent" {
 		t.Fatalf("expected name 'my-agent', got %q", dep.Name)
@@ -222,7 +222,7 @@ func TestAgentDeployment_BasicStructure(t *testing.T) {
 func TestAgentDeployment_Labels(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	labels := dep.Labels
 	if labels["app.kubernetes.io/name"] != "agent" {
@@ -245,7 +245,7 @@ func TestAgentDeployment_NoConfigMapHashAnnotation(t *testing.T) {
 	// Kubernetes ConfigMap volume updates and symlinks, not rolling restarts.
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	podAnnotations := dep.Spec.Template.Annotations
 	if _, ok := podAnnotations[ConfigMapHashAnnotation]; ok {
@@ -253,10 +253,54 @@ func TestAgentDeployment_NoConfigMapHashAnnotation(t *testing.T) {
 	}
 }
 
+func TestAgentDeployment_MCPCapabilityHashAnnotation(t *testing.T) {
+	agent := newTestAgent("my-agent", "default")
+
+	// With an MCP hash, the annotation should be present on the pod template
+	dep := AgentDeployment(agent, "", "abc123def456", nil, nil)
+
+	podAnnotations := dep.Spec.Template.Annotations
+	hash, ok := podAnnotations[MCPCapabilityHashAnnotation]
+	if !ok {
+		t.Fatal("expected MCP capability hash annotation on pod template")
+	}
+	if hash != "abc123def456" {
+		t.Fatalf("expected MCP hash 'abc123def456', got %q", hash)
+	}
+}
+
+func TestAgentDeployment_NoMCPCapabilityHashAnnotation(t *testing.T) {
+	agent := newTestAgent("my-agent", "default")
+
+	// Without an MCP hash, the annotation should not be present
+	dep := AgentDeployment(agent, "", "", nil, nil)
+
+	podAnnotations := dep.Spec.Template.Annotations
+	if _, ok := podAnnotations[MCPCapabilityHashAnnotation]; ok {
+		t.Fatal("MCP capability hash annotation should not be present when no MCP capabilities")
+	}
+}
+
+func TestAgentDeployment_MCPCapabilityHashChangesSpecHash(t *testing.T) {
+	agent := newTestAgent("my-agent", "default")
+
+	// Different MCP hashes should produce different deployment spec hashes,
+	// which triggers a rolling restart when MCP capabilities change.
+	dep1 := AgentDeployment(agent, "", "hash-v1", nil, nil)
+	dep2 := AgentDeployment(agent, "", "hash-v2", nil, nil)
+
+	hash1 := dep1.Annotations[DesiredSpecHashAnnotation]
+	hash2 := dep2.Annotations[DesiredSpecHashAnnotation]
+
+	if hash1 == hash2 {
+		t.Fatal("different MCP capability hashes should produce different spec hashes (triggers rollout)")
+	}
+}
+
 func TestAgentDeployment_DesiredSpecHashAnnotation(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Annotations == nil {
 		t.Fatal("expected deployment annotations")
@@ -273,7 +317,7 @@ func TestAgentDeployment_DesiredSpecHashAnnotation(t *testing.T) {
 func TestAgentDeployment_MainContainerBasics(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	containers := dep.Spec.Template.Spec.Containers
 	if len(containers) < 1 {
@@ -294,7 +338,7 @@ func TestAgentDeployment_MainContainerBasics(t *testing.T) {
 func TestAgentDeployment_MainContainerArgs(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -317,7 +361,7 @@ func TestAgentDeployment_LoggingArgs(t *testing.T) {
 		Enabled: &enabled,
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -336,7 +380,7 @@ func TestAgentDeployment_LoggingDisabled(t *testing.T) {
 		Enabled: &disabled,
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -348,7 +392,7 @@ func TestAgentDeployment_LoggingDisabled(t *testing.T) {
 func TestAgentDeployment_MainContainerEnvVars(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	envMap := make(map[string]corev1.EnvVar)
@@ -389,7 +433,7 @@ func TestAgentDeployment_AdditionalProviderEnvVars(t *testing.T) {
 		},
 	})
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	var found bool
@@ -414,7 +458,7 @@ func TestAgentDeployment_ProviderWithNoAPIKey(t *testing.T) {
 		APIKeySecret: nil,
 	})
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	for _, e := range main.Env {
@@ -427,7 +471,7 @@ func TestAgentDeployment_ProviderWithNoAPIKey(t *testing.T) {
 func TestAgentDeployment_DefaultResources(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	memReq := main.Resources.Requests[corev1.ResourceMemory]
@@ -456,7 +500,7 @@ func TestAgentDeployment_CustomResources(t *testing.T) {
 		},
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	memReq := main.Resources.Requests[corev1.ResourceMemory]
@@ -468,7 +512,7 @@ func TestAgentDeployment_CustomResources(t *testing.T) {
 func TestAgentDeployment_MainContainerPorts(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if len(main.Ports) != 1 {
@@ -485,7 +529,7 @@ func TestAgentDeployment_MainContainerPorts(t *testing.T) {
 func TestAgentDeployment_MainContainerProbes(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if main.ReadinessProbe == nil {
@@ -521,7 +565,7 @@ func TestAgentDeployment_WithSidecars(t *testing.T) {
 		newTestSidecar("gh", 8082, "ghcr.io/cli/cli:latest"),
 	}
 
-	dep := AgentDeployment(agent, "", sidecars, nil)
+	dep := AgentDeployment(agent, "", "", sidecars, nil)
 
 	// 1 main + 2 sidecars = 3 containers
 	containers := dep.Spec.Template.Spec.Containers
@@ -545,7 +589,7 @@ func TestAgentDeployment_SidecarConfigMapVolumes(t *testing.T) {
 		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
 	}
 
-	dep := AgentDeployment(agent, "", sidecars, nil)
+	dep := AgentDeployment(agent, "", "", sidecars, nil)
 
 	volumes := dep.Spec.Template.Spec.Volumes
 	var found bool
@@ -569,7 +613,7 @@ func TestAgentDeployment_ServiceAccountFromSidecars(t *testing.T) {
 	}
 	sidecars[0].Capability.Spec.Container.ServiceAccountName = "kubectl-sa"
 
-	dep := AgentDeployment(agent, "", sidecars, nil)
+	dep := AgentDeployment(agent, "", "", sidecars, nil)
 
 	if dep.Spec.Template.Spec.ServiceAccountName != "kubectl-sa" {
 		t.Fatalf("expected SA 'kubectl-sa', got %q", dep.Spec.Template.Spec.ServiceAccountName)
@@ -579,7 +623,7 @@ func TestAgentDeployment_ServiceAccountFromSidecars(t *testing.T) {
 func TestAgentDeployment_NoServiceAccountWithoutSidecars(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Spec.Template.Spec.ServiceAccountName != "" {
 		t.Fatalf("expected empty SA without sidecars, got %q", dep.Spec.Template.Spec.ServiceAccountName)
@@ -589,7 +633,7 @@ func TestAgentDeployment_NoServiceAccountWithoutSidecars(t *testing.T) {
 func TestAgentDeployment_InitContainer(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	initContainers := dep.Spec.Template.Spec.InitContainers
 	if len(initContainers) != 1 {
@@ -611,7 +655,7 @@ func TestAgentDeployment_CustomImage(t *testing.T) {
 		PullPolicy: corev1.PullAlways,
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if main.Image != "custom/opencode:v2" {
@@ -628,7 +672,7 @@ func TestAgentDeployment_AdditionalVolumeMounts(t *testing.T) {
 		{Name: "extra", MountPath: "/extra"},
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	var found bool
@@ -1218,7 +1262,7 @@ func TestAgentDeployment_Strategy_RecreateWithPVC(t *testing.T) {
 		Size: resource.MustParse("10Gi"),
 	}
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Fatalf("expected Recreate strategy with PVC, got %v", dep.Spec.Strategy.Type)
@@ -1229,7 +1273,7 @@ func TestAgentDeployment_Strategy_RollingUpdateWithoutPVC(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 	// No storage = emptyDir
 
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
 		t.Fatalf("expected RollingUpdate strategy without PVC, got %v", dep.Spec.Strategy.Type)
@@ -1243,8 +1287,8 @@ func TestAgentDeployment_Strategy_RollingUpdateWithoutPVC(t *testing.T) {
 func TestHashDeploymentSpec_Deterministic(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep1 := AgentDeployment(agent, "", nil, nil)
-	dep2 := AgentDeployment(agent, "", nil, nil)
+	dep1 := AgentDeployment(agent, "", "", nil, nil)
+	dep2 := AgentDeployment(agent, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1258,8 +1302,8 @@ func TestHashDeploymentSpec_DifferentSpecs(t *testing.T) {
 	agent1 := newTestAgent("agent-a", "default")
 	agent2 := newTestAgent("agent-b", "default")
 
-	dep1 := AgentDeployment(agent1, "", nil, nil)
-	dep2 := AgentDeployment(agent2, "", nil, nil)
+	dep1 := AgentDeployment(agent1, "", "", nil, nil)
+	dep2 := AgentDeployment(agent2, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1273,8 +1317,8 @@ func TestHashDeploymentSpec_SameInputsSameHash(t *testing.T) {
 	// Without configmap hash in annotations, same agent always produces same spec hash
 	agent := newTestAgent("my-agent", "default")
 
-	dep1 := AgentDeployment(agent, "", nil, nil)
-	dep2 := AgentDeployment(agent, "", nil, nil)
+	dep1 := AgentDeployment(agent, "", "", nil, nil)
+	dep2 := AgentDeployment(agent, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1286,7 +1330,7 @@ func TestHashDeploymentSpec_SameInputsSameHash(t *testing.T) {
 
 func TestHashDeploymentSpec_Length(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
-	dep := AgentDeployment(agent, "", nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	hash := HashDeploymentSpec(dep)
 
@@ -1326,7 +1370,7 @@ func TestAgentDeployment_FullStack(t *testing.T) {
 		{Name: "GITHUB_TOKEN", ValueFrom: agentsv1alpha1.SecretKeySelector{Name: "gh-secret", Key: "token"}},
 	}
 
-	dep := AgentDeployment(agent, "", sidecars, nil)
+	dep := AgentDeployment(agent, "", "", sidecars, nil)
 
 	// Basic structure
 	if dep.Name != "sre-agent" {

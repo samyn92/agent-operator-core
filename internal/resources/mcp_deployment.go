@@ -313,6 +313,13 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		Image:           server.Image,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/gateway/capability-gateway"},
+		// WorkingDir must be set to a writable directory because the root filesystem
+		// is read-only. Without this, the container CWD defaults to "/" and tools like
+		// pydantic-settings (used by k8s-mcp-server) crash trying to stat(".env") in
+		// the read-only root. The gateway also sets cmd.Dir as a defense-in-depth
+		// measure, but setting the container WorkingDir ensures correct CWD even
+		// before the gateway binary starts.
+		WorkingDir: "/data",
 		Ports: []corev1.ContainerPort{
 			{Name: "sse", ContainerPort: port, Protocol: corev1.ProtocolTCP},
 		},

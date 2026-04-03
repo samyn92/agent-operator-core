@@ -156,6 +156,14 @@ type ResolvedCapabilities struct {
 	// MCPWorkspaces are MCP server capabilities with shared workspace PVCs.
 	// These PVCs need to be mounted in the agent pod for shared filesystem access.
 	MCPWorkspaces []resources.MCPWorkspaceInfo
+	// MCPCapabilityHash is a SHA256 hash of all referenced MCP capability specs.
+	// When any MCP capability changes (command, image, env, workspace, permissions, etc.),
+	// this hash changes, which updates the agent pod template annotation and triggers
+	// a rolling restart. This is necessary because MCP servers run as separate pods —
+	// unlike Container sidecars, MCP capability changes don't affect the agent pod template
+	// directly, so without this hash the agent pod would keep running with stale MCP
+	// connections (OpenCode only connects to MCP servers at startup).
+	MCPCapabilityHash string
 	// SkillFiles are Skill capabilities with their SKILL.md content (name -> content)
 	SkillFiles map[string]string
 	// ToolFiles are Tool capabilities with their TypeScript code (name -> code)
@@ -179,6 +187,11 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 
 	// Port counter for Container sidecars - starts at 8081
 	nextPort := int32(resources.SidecarBasePort)
+
+	// Collect MCP capability specs for hashing. When any MCP capability changes,
+	// the hash changes and triggers an agent pod rollout — necessary because MCP
+	// servers are separate pods and OpenCode only connects at startup.
+	var mcpSpecs []agentsv1alpha1.MCPCapabilitySpec
 
 	for _, ref := range agent.Spec.CapabilityRefs {
 		capability := &agentsv1alpha1.Capability{}
@@ -232,6 +245,10 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 					PVCName:   resources.MCPServerWorkspacePVCName(capability),
 					MountPath: mountPath,
 				})
+			}
+			// Collect the full MCP spec for hash computation.
+			if capability.Spec.MCP != nil {
+				mcpSpecs = append(mcpSpecs, *capability.Spec.MCP)
 			}
 
 		case agentsv1alpha1.CapabilityTypeSkill:
@@ -310,6 +327,19 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 					}
 				}
 			}
+		}
+	}
+
+	// Compute a deterministic hash of all MCP capability specs.
+	// This hash is added as a pod template annotation so that any change to an MCP
+	// capability (command, image, env vars, workspace config, etc.) triggers a rolling
+	// restart of the agent pod. Without this, the agent would keep stale MCP connections
+	// because OpenCode only connects to MCP servers at startup.
+	if len(mcpSpecs) > 0 {
+		data, err := json.Marshal(mcpSpecs)
+		if err == nil {
+			hash := sha256.Sum256(data)
+			resolved.MCPCapabilityHash = hex.EncodeToString(hash[:])
 		}
 	}
 
@@ -632,7 +662,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, agent *agents
 	desiredConfigMap := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
 	configMapHash := resources.HashConfigMapData(desiredConfigMap.Data)
 
-	desired := resources.AgentDeployment(agent, configMapHash, resolved.Sidecars, resolved.MCPWorkspaces)
+	desired := resources.AgentDeployment(agent, configMapHash, resolved.MCPCapabilityHash, resolved.Sidecars, resolved.MCPWorkspaces)
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}

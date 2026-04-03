@@ -101,6 +101,14 @@ func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
 	return "" // Use default if no capability specifies a ServiceAccount
 }
 
+// MCPCapabilityHashAnnotation is the annotation key for the MCP capability spec hash.
+// When any MCP capability referenced by the agent changes (command, image, env, workspace,
+// permissions, etc.), this hash changes, updating the pod template and triggering a
+// rolling restart. This is necessary because MCP servers run as separate pods — unlike
+// Container sidecars which modify the pod template directly, MCP capability changes
+// are invisible to the agent pod without this annotation.
+const MCPCapabilityHashAnnotation = "agents.io/mcp-capability-hash"
+
 // AgentDeployment creates a Deployment for the agent.
 // configMapHash is the SHA256 hash of the ConfigMap data; when it changes the pod
 // template annotation changes, triggering a rolling restart so init-container
@@ -109,10 +117,14 @@ func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
 // volume propagation, but tool files are copied by the init container and require
 // a restart to pick up changes.
 //
+// mcpCapabilityHash is a SHA256 hash of all referenced MCP capability specs. When
+// any MCP capability changes, this hash changes, triggering a rolling restart so
+// the agent reconnects to updated MCP servers (OpenCode only connects at startup).
+//
 // mcpWorkspaces contains PVC information for MCP server capabilities that need
 // shared filesystem access. These PVCs are mounted into the agent pod so that both
 // the agent and the MCP server pod have access to the same workspace files.
-func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo) *appsv1.Deployment {
+func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapabilityHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
@@ -228,6 +240,9 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars
 	podAnnotations := map[string]string{}
 	if configMapHash != "" {
 		podAnnotations[ConfigMapHashAnnotation] = configMapHash
+	}
+	if mcpCapabilityHash != "" {
+		podAnnotations[MCPCapabilityHashAnnotation] = mcpCapabilityHash
 	}
 
 	// Determine ServiceAccount - sidecars share the pod's SA

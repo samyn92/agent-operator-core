@@ -392,6 +392,50 @@ func TestSpawnMCPServer_Success(t *testing.T) {
 	}
 }
 
+func TestSpawnMCPServer_WorkingDir(t *testing.T) {
+	// Test that cmd.Dir is set to HOME when HOME is set
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	os.Setenv("HOME", "/tmp")
+
+	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	handler := NewHandler(config, testLogger())
+
+	ctx := context.Background()
+	sess, err := handler.spawnMCPServer(ctx, "cwd-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer sess.close()
+
+	if sess.cmd.Dir != "/tmp" {
+		t.Fatalf("expected cmd.Dir=/tmp (from HOME), got %q", sess.cmd.Dir)
+	}
+}
+
+func TestSpawnMCPServer_WorkingDirFallback(t *testing.T) {
+	// Test that cmd.Dir falls back to /tmp when HOME is unset
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	os.Unsetenv("HOME")
+
+	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	handler := NewHandler(config, testLogger())
+
+	ctx := context.Background()
+	sess, err := handler.spawnMCPServer(ctx, "cwd-fallback-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer sess.close()
+
+	if sess.cmd.Dir != "/tmp" {
+		t.Fatalf("expected cmd.Dir=/tmp (fallback), got %q", sess.cmd.Dir)
+	}
+}
+
 func TestSessionClose(t *testing.T) {
 	config := gateway.Config{Mode: "mcp", Command: "cat"}
 	handler := NewHandler(config, testLogger())
