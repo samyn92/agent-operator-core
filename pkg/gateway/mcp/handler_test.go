@@ -561,6 +561,78 @@ func TestReadFromServer_EmptyLines(t *testing.T) {
 	}
 }
 
+func TestReadFromServer_LargeResponse(t *testing.T) {
+	// MCP servers like @zereight/mcp-gitlab (141 tools) return tools/list
+	// responses that exceed the default 64KB bufio.Scanner buffer.
+	// This test verifies the scanner can handle responses up to 1MB.
+	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	handler := NewHandler(config, testLogger())
+
+	sess, err := handler.spawnMCPServer(context.Background(), "large-response-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer sess.close()
+
+	go sess.readFromServer(testLogger())
+
+	// Build a JSON object larger than 64KB (the default bufio.Scanner limit)
+	// Simulate a tools/list response with many tools
+	largePayload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]interface{}{
+			"tools": make([]map[string]interface{}, 0),
+		},
+	}
+	tools := make([]map[string]interface{}, 200)
+	for i := 0; i < 200; i++ {
+		tools[i] = map[string]interface{}{
+			"name":        strings.Repeat("x", 100),
+			"description": strings.Repeat("y", 500),
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"arg1": map[string]string{"type": "string", "description": strings.Repeat("z", 200)},
+					"arg2": map[string]string{"type": "string", "description": strings.Repeat("z", 200)},
+				},
+			},
+		}
+	}
+	largePayload["result"].(map[string]interface{})["tools"] = tools
+
+	jsonBytes, err := json.Marshal(largePayload)
+	if err != nil {
+		t.Fatalf("failed to marshal large payload: %v", err)
+	}
+
+	if len(jsonBytes) < 64*1024 {
+		t.Fatalf("test payload too small (%d bytes), must exceed 64KB to test scanner buffer", len(jsonBytes))
+	}
+	t.Logf("large response size: %d bytes (%.1f KB)", len(jsonBytes), float64(len(jsonBytes))/1024)
+
+	// Write the large JSON line to stdin — cat echoes to stdout
+	sess.mu.Lock()
+	_, err = sess.stdin.Write(append(jsonBytes, '\n'))
+	sess.mu.Unlock()
+	if err != nil {
+		t.Fatalf("failed to write to stdin: %v", err)
+	}
+
+	// Read the echoed message — this would fail with the default 64KB scanner
+	select {
+	case data := <-sess.messages:
+		if !json.Valid(data) {
+			t.Fatal("received invalid JSON")
+		}
+		if len(data) != len(jsonBytes) {
+			t.Fatalf("expected %d bytes, got %d", len(jsonBytes), len(data))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for large message — scanner buffer likely too small")
+	}
+}
+
 // =============================================================================
 // MCP DENY ENFORCEMENT TESTS
 // =============================================================================

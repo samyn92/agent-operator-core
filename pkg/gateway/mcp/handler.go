@@ -396,11 +396,17 @@ func (h *Handler) spawnMCPServer(ctx context.Context, id string) (*session, erro
 		return nil, fmt.Errorf("failed to start MCP server: %w", err)
 	}
 
+	// MCP servers can return very large JSON-RPC responses (e.g. tools/list
+	// with 141 tools easily exceeds the default 64KB bufio.Scanner buffer).
+	// Use a 4MB buffer to handle even the largest tool registries.
+	stdoutScanner := bufio.NewScanner(stdout)
+	stdoutScanner.Buffer(make([]byte, 0, 4*1024*1024), 4*1024*1024)
+
 	sess := &session{
 		id:       id,
 		cmd:      cmd,
 		stdin:    stdin,
-		stdout:   bufio.NewScanner(stdout),
+		stdout:   stdoutScanner,
 		messages: make(chan []byte, 64),
 		done:     make(chan struct{}),
 	}
