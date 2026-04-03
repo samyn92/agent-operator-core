@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -91,10 +92,22 @@ func (cw *ConfigWatcher) SetOnReload(fn func(key, value string)) {
 func (cw *ConfigWatcher) run() {
 	defer close(cw.done)
 
+	// Debounce timer to coalesce rapid events. On Linux, os.WriteFile can
+	// produce a CREATE (truncate to 0 bytes) followed by a WRITE with the
+	// actual data. Without debouncing we may read the file between truncation
+	// and write, getting an empty value.
+	const debounceDelay = 50 * time.Millisecond
+	var debounceC <-chan time.Time
+	pending := false
+
 	for {
 		select {
 		case event, ok := <-cw.watcher.Events:
 			if !ok {
+				// Channel closed; do a final reload if events were pending
+				if pending {
+					cw.loadAll()
+				}
 				return
 			}
 			// Kubernetes ConfigMap volumes use a symlink swap:
@@ -107,13 +120,20 @@ func (cw *ConfigWatcher) run() {
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				base := filepath.Base(event.Name)
 				if base == "..data" || !strings.HasPrefix(base, "..") {
-					cw.logger.Info("config change detected, reloading",
+					cw.logger.Info("config change detected, scheduling reload",
 						"event", event.Name,
 						"op", event.Op.String(),
 					)
-					cw.loadAll()
+					pending = true
+					debounceC = time.After(debounceDelay)
 				}
 			}
+
+		case <-debounceC:
+			debounceC = nil
+			pending = false
+			cw.logger.Info("debounce expired, reloading config")
+			cw.loadAll()
 
 		case err, ok := <-cw.watcher.Errors:
 			if !ok {
