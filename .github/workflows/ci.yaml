@@ -22,6 +22,24 @@ jobs:
       - name: Test
         run: go test -v ./...
 
+  crd-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1
+
+      - name: Regenerate CRDs
+        run: controller-gen crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=/tmp/crds
+
+      - name: Check for drift
+        run: diff -r /tmp/crds config/crd/bases/ || (echo "CRDs are out of date. Run: controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=config/crd/bases" && exit 1)
+
   helm-lint:
     if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     runs-on: ubuntu-latest

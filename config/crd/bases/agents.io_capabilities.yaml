@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.20.0
   name: capabilities.agents.io
 spec:
   group: agents.io
@@ -477,12 +477,12 @@ spec:
                     description: |-
                       Code is the inline TypeScript/JavaScript source code for the plugin.
                       Should export a default plugin function.
-                      Either code, configMapRef, or package must be specified.
+                      Exactly one of code, configMapRef, package, or ociRef must be specified.
                     type: string
                   configMapRef:
                     description: |-
                       ConfigMapRef references a ConfigMap containing the plugin source code.
-                      Either code, configMapRef, or package must be specified.
+                      Exactly one of code, configMapRef, package, or ociRef must be specified.
                     properties:
                       key:
                         description: Key is the key in the ConfigMap
@@ -494,11 +494,102 @@ spec:
                     - key
                     - name
                     type: object
+                  ociRef:
+                    description: |-
+                      OCIRef references an OCI artifact containing the plugin source code.
+                      The artifact should contain a single .ts/.js file as a layer.
+                      Exactly one of code, configMapRef, package, or ociRef must be specified.
+                    properties:
+                      digest:
+                        description: |-
+                          Digest is an optional content digest for immutable pinning.
+                          When specified, the artifact is verified against this digest after pull.
+                          Format: <algorithm>:<hex> (e.g., "sha256:abc123...").
+                          If both tag (in ref) and digest are specified, digest takes precedence for verification.
+                        type: string
+                      pullSecret:
+                        description: |-
+                          PullSecret references a Kubernetes Secret containing registry credentials.
+                          The secret should contain a .dockerconfigjson key (type kubernetes.io/dockerconfigjson)
+                          or individual username/password keys.
+                          If not specified, the artifact is pulled anonymously (public registries).
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      ref:
+                        description: |-
+                          Ref is the OCI artifact reference (e.g., "ghcr.io/org/skills/my-skill:1.0.0").
+                          Follows the standard OCI reference format: <registry>/<repository>:<tag> or
+                          <registry>/<repository>@<digest>.
+                        minLength: 1
+                        type: string
+                      verify:
+                        description: |-
+                          Verify configures optional Cosign signature verification.
+                          When specified, the artifact's signature is verified before the content is used.
+                          If verification fails, the capability enters a Failed phase.
+                        properties:
+                          keyless:
+                            description: |-
+                              Keyless configures keyless (OIDC-based) Cosign verification.
+                              Verifies the artifact was signed by a specific identity via an OIDC issuer.
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              identity:
+                                description: |-
+                                  Identity is the expected signing identity (email or URI).
+                                  Example: "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0"
+                                type: string
+                              issuer:
+                                description: |-
+                                  Issuer is the expected OIDC issuer URL.
+                                  Example: "https://token.actions.githubusercontent.com" for GitHub Actions.
+                                type: string
+                            required:
+                            - identity
+                            - issuer
+                            type: object
+                          provider:
+                            default: cosign
+                            description: |-
+                              Provider is the signature verification provider.
+                              Currently only "cosign" is supported.
+                            enum:
+                            - cosign
+                            type: string
+                          publicKey:
+                            description: |-
+                              PublicKey references a Secret containing the Cosign public key (PEM format).
+                              Used for key-based verification (cosign verify --key).
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              key:
+                                description: Key is the key in the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                    required:
+                    - ref
+                    type: object
                   package:
                     description: |-
                       Package is an npm package name to install as a plugin.
                       Example: "@company/opencode-plugin-audit"
-                      Either code, configMapRef, or package must be specified.
+                      Exactly one of code, configMapRef, package, or ociRef must be specified.
                     type: string
                 type: object
               rateLimit:
@@ -611,7 +702,7 @@ spec:
                   configMapRef:
                     description: |-
                       ConfigMapRef references a ConfigMap containing the SKILL.md content.
-                      Either content or configMapRef must be specified.
+                      Exactly one of content, configMapRef, or ociRef must be specified.
                     properties:
                       key:
                         description: Key is the key in the ConfigMap
@@ -627,8 +718,100 @@ spec:
                     description: |-
                       Content is the inline SKILL.md content.
                       Should include YAML frontmatter with name and description.
-                      Either content or configMapRef must be specified.
+                      Exactly one of content, configMapRef, or ociRef must be specified.
                     type: string
+                  ociRef:
+                    description: |-
+                      OCIRef references an OCI artifact containing the SKILL.md content.
+                      The artifact must conform to the Agent Skills OCI Artifacts spec
+                      (application/vnd.agentskills.skill.v1 artifact type).
+                      Exactly one of content, configMapRef, or ociRef must be specified.
+                    properties:
+                      digest:
+                        description: |-
+                          Digest is an optional content digest for immutable pinning.
+                          When specified, the artifact is verified against this digest after pull.
+                          Format: <algorithm>:<hex> (e.g., "sha256:abc123...").
+                          If both tag (in ref) and digest are specified, digest takes precedence for verification.
+                        type: string
+                      pullSecret:
+                        description: |-
+                          PullSecret references a Kubernetes Secret containing registry credentials.
+                          The secret should contain a .dockerconfigjson key (type kubernetes.io/dockerconfigjson)
+                          or individual username/password keys.
+                          If not specified, the artifact is pulled anonymously (public registries).
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      ref:
+                        description: |-
+                          Ref is the OCI artifact reference (e.g., "ghcr.io/org/skills/my-skill:1.0.0").
+                          Follows the standard OCI reference format: <registry>/<repository>:<tag> or
+                          <registry>/<repository>@<digest>.
+                        minLength: 1
+                        type: string
+                      verify:
+                        description: |-
+                          Verify configures optional Cosign signature verification.
+                          When specified, the artifact's signature is verified before the content is used.
+                          If verification fails, the capability enters a Failed phase.
+                        properties:
+                          keyless:
+                            description: |-
+                              Keyless configures keyless (OIDC-based) Cosign verification.
+                              Verifies the artifact was signed by a specific identity via an OIDC issuer.
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              identity:
+                                description: |-
+                                  Identity is the expected signing identity (email or URI).
+                                  Example: "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0"
+                                type: string
+                              issuer:
+                                description: |-
+                                  Issuer is the expected OIDC issuer URL.
+                                  Example: "https://token.actions.githubusercontent.com" for GitHub Actions.
+                                type: string
+                            required:
+                            - identity
+                            - issuer
+                            type: object
+                          provider:
+                            default: cosign
+                            description: |-
+                              Provider is the signature verification provider.
+                              Currently only "cosign" is supported.
+                            enum:
+                            - cosign
+                            type: string
+                          publicKey:
+                            description: |-
+                              PublicKey references a Secret containing the Cosign public key (PEM format).
+                              Used for key-based verification (cosign verify --key).
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              key:
+                                description: Key is the key in the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                    required:
+                    - ref
+                    type: object
                 type: object
               tool:
                 description: |-
@@ -639,12 +822,12 @@ spec:
                     description: |-
                       Code is the inline TypeScript/JavaScript source code for the tool.
                       Should export a default using tool() from @opencode-ai/plugin.
-                      Either code or configMapRef must be specified.
+                      Exactly one of code, configMapRef, or ociRef must be specified.
                     type: string
                   configMapRef:
                     description: |-
                       ConfigMapRef references a ConfigMap containing the tool source code.
-                      Either code or configMapRef must be specified.
+                      Exactly one of code, configMapRef, or ociRef must be specified.
                     properties:
                       key:
                         description: Key is the key in the ConfigMap
@@ -655,6 +838,97 @@ spec:
                     required:
                     - key
                     - name
+                    type: object
+                  ociRef:
+                    description: |-
+                      OCIRef references an OCI artifact containing the tool source code.
+                      The artifact should contain a single .ts/.js file as a layer.
+                      Exactly one of code, configMapRef, or ociRef must be specified.
+                    properties:
+                      digest:
+                        description: |-
+                          Digest is an optional content digest for immutable pinning.
+                          When specified, the artifact is verified against this digest after pull.
+                          Format: <algorithm>:<hex> (e.g., "sha256:abc123...").
+                          If both tag (in ref) and digest are specified, digest takes precedence for verification.
+                        type: string
+                      pullSecret:
+                        description: |-
+                          PullSecret references a Kubernetes Secret containing registry credentials.
+                          The secret should contain a .dockerconfigjson key (type kubernetes.io/dockerconfigjson)
+                          or individual username/password keys.
+                          If not specified, the artifact is pulled anonymously (public registries).
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      ref:
+                        description: |-
+                          Ref is the OCI artifact reference (e.g., "ghcr.io/org/skills/my-skill:1.0.0").
+                          Follows the standard OCI reference format: <registry>/<repository>:<tag> or
+                          <registry>/<repository>@<digest>.
+                        minLength: 1
+                        type: string
+                      verify:
+                        description: |-
+                          Verify configures optional Cosign signature verification.
+                          When specified, the artifact's signature is verified before the content is used.
+                          If verification fails, the capability enters a Failed phase.
+                        properties:
+                          keyless:
+                            description: |-
+                              Keyless configures keyless (OIDC-based) Cosign verification.
+                              Verifies the artifact was signed by a specific identity via an OIDC issuer.
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              identity:
+                                description: |-
+                                  Identity is the expected signing identity (email or URI).
+                                  Example: "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0"
+                                type: string
+                              issuer:
+                                description: |-
+                                  Issuer is the expected OIDC issuer URL.
+                                  Example: "https://token.actions.githubusercontent.com" for GitHub Actions.
+                                type: string
+                            required:
+                            - identity
+                            - issuer
+                            type: object
+                          provider:
+                            default: cosign
+                            description: |-
+                              Provider is the signature verification provider.
+                              Currently only "cosign" is supported.
+                            enum:
+                            - cosign
+                            type: string
+                          publicKey:
+                            description: |-
+                              PublicKey references a Secret containing the Cosign public key (PEM format).
+                              Used for key-based verification (cosign verify --key).
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              key:
+                                description: Key is the key in the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                    required:
+                    - ref
                     type: object
                 type: object
               type:
