@@ -32,6 +32,8 @@ type CapabilityReconciler struct {
 // +kubebuilder:rbac:groups=agents.io,resources=capabilities/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
 func (r *CapabilityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -105,6 +107,20 @@ func (r *CapabilityReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // Returns true if the Deployment is ready (available replicas > 0), false if still rolling out.
 func (r *CapabilityReconciler) reconcileMCPServer(ctx context.Context, capability *agentsv1alpha1.Capability) (bool, error) {
 	logger := log.FromContext(ctx)
+
+	// Reconcile the gateway ConfigMap (deny rules, etc.) before the Deployment
+	// so the ConfigMap is available at pod startup.
+	if err := r.reconcileMCPServerConfigMap(ctx, capability); err != nil {
+		return false, fmt.Errorf("failed to reconcile MCP server ConfigMap: %w", err)
+	}
+
+	// Reconcile the shared workspace PVC if workspace is enabled.
+	// This must be created before the Deployment so the PVC is available at pod startup.
+	if resources.MCPServerHasWorkspace(capability) {
+		if err := r.reconcileMCPServerWorkspacePVC(ctx, capability); err != nil {
+			return false, fmt.Errorf("failed to reconcile MCP server workspace PVC: %w", err)
+		}
+	}
 
 	// Reconcile the MCP server Deployment
 	if err := r.reconcileMCPServerDeployment(ctx, capability); err != nil {
@@ -197,6 +213,61 @@ func (r *CapabilityReconciler) reconcileMCPServerService(ctx context.Context, ca
 	// Update the Service spec (preserve ClusterIP)
 	existing.Spec.Selector = desired.Spec.Selector
 	existing.Spec.Ports = desired.Spec.Ports
+	return r.Update(ctx, existing)
+}
+
+// reconcileMCPServerWorkspacePVC creates the shared workspace PVC for an MCP server capability.
+// The PVC uses ReadWriteMany access and is mounted by both the MCP server pod and the agent pod.
+// PVCs are immutable after creation — we only create, never update.
+func (r *CapabilityReconciler) reconcileMCPServerWorkspacePVC(ctx context.Context, capability *agentsv1alpha1.Capability) error {
+	desired := resources.MCPServerWorkspacePVC(capability)
+
+	// Set owner reference so the PVC is garbage-collected when the Capability is deleted
+	if err := controllerutil.SetControllerReference(capability, desired, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference on MCP server workspace PVC: %w", err)
+	}
+
+	// Check if the PVC already exists — PVCs are immutable, so we only create
+	existing := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.FromContext(ctx).Info("Creating MCP server workspace PVC", "name", desired.Name)
+			return r.Create(ctx, desired)
+		}
+		return err
+	}
+
+	// PVC already exists — nothing to do (PVCs can't be resized in-place for most storage classes)
+	return nil
+}
+
+// reconcileMCPServerConfigMap creates or updates the ConfigMap for an MCP server capability.
+// The ConfigMap contains gateway configuration such as MCP deny rules. It is mounted into
+// the MCP server pod and hot-reloaded by the capability-gateway's ConfigWatcher.
+func (r *CapabilityReconciler) reconcileMCPServerConfigMap(ctx context.Context, capability *agentsv1alpha1.Capability) error {
+	desired := resources.MCPServerConfigMap(capability)
+
+	// Set owner reference so the ConfigMap is garbage-collected when the Capability is deleted
+	if err := controllerutil.SetControllerReference(capability, desired, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference on MCP server ConfigMap: %w", err)
+	}
+
+	// Check if the ConfigMap already exists
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.FromContext(ctx).Info("Creating MCP server ConfigMap", "name", desired.Name)
+			return r.Create(ctx, desired)
+		}
+		return err
+	}
+
+	// Update the ConfigMap data if it changed.
+	// ConfigMap updates are picked up by Kubernetes volume projection (kubelet sync)
+	// and then by the gateway's ConfigWatcher (fsnotify).
+	existing.Data = desired.Data
 	return r.Update(ctx, existing)
 }
 
@@ -476,6 +547,10 @@ func (r *CapabilityReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		// Watch owned Services (MCP server services)
 		Owns(&corev1.Service{}).
+		// Watch owned PVCs (MCP server workspace volumes)
+		Owns(&corev1.PersistentVolumeClaim{}).
+		// Watch owned ConfigMaps (MCP server gateway config — deny rules, etc.)
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }
 

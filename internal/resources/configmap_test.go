@@ -928,6 +928,71 @@ func TestGenerateSourceTool_SpecialCharsInDescription(t *testing.T) {
 	}
 }
 
+func TestGenerateSourceTool_WithDenyPatterns(t *testing.T) {
+	src := SourceInfo{
+		Name:          "git",
+		Description:   "Git CLI for repository operations",
+		ServiceURL:    "http://localhost:8081",
+		CommandPrefix: "git -C /workspace ",
+		Deny:          []string{"push * main", "push * master", "push --force *"},
+	}
+
+	code := GenerateSourceTool(src)
+
+	// Should contain deny patterns array
+	if !strings.Contains(code, "DENY_PATTERNS") {
+		t.Fatal("expected DENY_PATTERNS constant in deny-aware code")
+	}
+	// Should contain the full (prefixed) deny patterns
+	if !strings.Contains(code, "git -C /workspace push * main") {
+		t.Fatal("expected prefixed deny pattern for push main")
+	}
+	if !strings.Contains(code, "git -C /workspace push * master") {
+		t.Fatal("expected prefixed deny pattern for push master")
+	}
+	if !strings.Contains(code, "git -C /workspace push --force *") {
+		t.Fatal("expected prefixed deny pattern for force push")
+	}
+	// Should contain wildcardMatch function
+	if !strings.Contains(code, "function wildcardMatch") {
+		t.Fatal("expected wildcardMatch function in deny-aware code")
+	}
+	// Should contain wouldMatchDenied function
+	if !strings.Contains(code, "function wouldMatchDenied") {
+		t.Fatal("expected wouldMatchDenied function in deny-aware code")
+	}
+	// Should still have the standard tool structure
+	if !strings.Contains(code, "ctx.ask") {
+		t.Fatal("expected ctx.ask permission call")
+	}
+	if !strings.Contains(code, "alwaysPattern(command)") {
+		t.Fatal("expected alwaysPattern call in ctx.ask")
+	}
+}
+
+func TestGenerateSourceTool_NoDenyPatterns(t *testing.T) {
+	src := SourceInfo{
+		Name:          "kubectl",
+		Description:   "Kubernetes CLI tool",
+		ServiceURL:    "http://localhost:8081",
+		CommandPrefix: "kubectl ",
+	}
+
+	code := GenerateSourceTool(src)
+
+	// Without deny patterns, should use the simple alwaysPattern
+	if strings.Contains(code, "DENY_PATTERNS") {
+		t.Fatal("should NOT contain DENY_PATTERNS when no deny patterns")
+	}
+	if strings.Contains(code, "wildcardMatch") {
+		t.Fatal("should NOT contain wildcardMatch when no deny patterns")
+	}
+	// Should still have alwaysPattern
+	if !strings.Contains(code, "function alwaysPattern") {
+		t.Fatal("expected alwaysPattern function")
+	}
+}
+
 // =============================================================================
 // buildSourcePermission TESTS
 // =============================================================================

@@ -28,15 +28,17 @@ import (
 	"sync/atomic"
 
 	"github.com/google/shlex"
+	"github.com/samyn92/agent-operator-core/pkg/cmdvalidator"
 	"github.com/samyn92/agent-operator-core/pkg/gateway"
 )
 
 // Handler implements the MCP gateway mode.
 type Handler struct {
-	config  gateway.Config
-	logger  *slog.Logger
-	limiter *gateway.RateLimiter
-	audit   *gateway.AuditLogger
+	config        gateway.Config
+	logger        *slog.Logger
+	limiter       *gateway.RateLimiter
+	audit         *gateway.AuditLogger
+	configWatcher *gateway.ConfigWatcher // nil if no watcher configured
 
 	// sessions tracks active SSE sessions
 	sessions sync.Map // sessionID -> *session
@@ -62,6 +64,22 @@ func NewHandler(config gateway.Config, logger *slog.Logger) *Handler {
 		limiter: gateway.NewRateLimiter(config.RateLimitRPM),
 		audit:   gateway.NewAuditLogger(logger, config.AuditEnabled),
 	}
+}
+
+// SetConfigWatcher attaches a ConfigWatcher for dynamic config reloading.
+// When set, the handler reads MCP deny rules from the watcher, enabling
+// hot-reload without pod restarts.
+func (h *Handler) SetConfigWatcher(cw *gateway.ConfigWatcher) {
+	h.configWatcher = cw
+}
+
+// mcpDenyRules returns the current MCP deny rules from the ConfigWatcher.
+// Returns nil if no watcher is configured or no mcp-deny-rules file exists.
+func (h *Handler) mcpDenyRules() []cmdvalidator.MCPDenyRule {
+	if h.configWatcher != nil {
+		return h.configWatcher.MCPDenyRules()
+	}
+	return nil
 }
 
 // Register adds MCP mode routes to the given mux.
@@ -143,8 +161,34 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// jsonRPCRequest represents a JSON-RPC 2.0 request (partial parse).
+// We only parse the fields we need for deny-rule enforcement.
+type jsonRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	ID      json.RawMessage `json:"id"` // can be string, number, or null
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+// toolsCallParams represents the params of a tools/call JSON-RPC request.
+type toolsCallParams struct {
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments,omitempty"`
+}
+
+// jsonRPCError represents a JSON-RPC 2.0 error response.
+type jsonRPCError struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 // handleMessage receives a JSON-RPC message from the client and writes it
-// to the MCP server's stdin.
+// to the MCP server's stdin. For tools/call messages, it first checks the
+// request against MCP deny rules and blocks denied tool invocations.
 func (h *Handler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sessionId")
 	if sessionID == "" {
@@ -182,6 +226,17 @@ func (h *Handler) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check MCP deny rules for tools/call requests.
+	// This is the MCP equivalent of CLI deny-pattern enforcement — it ensures
+	// deny rules cannot be bypassed by OpenCode's runtime permission system.
+	if rules := h.mcpDenyRules(); len(rules) > 0 {
+		if denied := h.checkToolsCallDeny(body, rules, sess, sessionID); denied {
+			// JSON-RPC error was injected onto the SSE stream; don't forward to server.
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+
 	if h.config.AuditEnabled {
 		h.audit.LogRequest("mcp request",
 			"session", sessionID,
@@ -207,6 +262,84 @@ func (h *Handler) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// checkToolsCallDeny checks if a JSON-RPC message is a tools/call request that
+// matches any MCP deny rule. If denied, it injects a JSON-RPC error response
+// directly onto the session's SSE message channel (preserving the MCP protocol
+// contract) and returns true. Returns false if the message should be forwarded.
+//
+// This is the MCP equivalent of the CLI handler's deny-pattern enforcement step.
+// It ensures deny rules are enforced at the gateway level as a security backstop,
+// regardless of what OpenCode's permission system decided.
+func (h *Handler) checkToolsCallDeny(body []byte, rules []cmdvalidator.MCPDenyRule, sess *session, sessionID string) bool {
+	// Parse only the method field first — most messages are not tools/call
+	var req jsonRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false // can't parse — let it through (already validated as JSON)
+	}
+
+	if req.Method != "tools/call" {
+		return false
+	}
+
+	// Parse the params to get tool name and arguments
+	var params toolsCallParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		h.logger.Warn("failed to parse tools/call params",
+			"session", sessionID,
+			"error", err,
+		)
+		return false // can't parse params — let it through
+	}
+
+	// Check against deny rules
+	matched := cmdvalidator.CheckMCPDenyRules(params.Name, params.Arguments, rules)
+	if matched == "" {
+		return false // allowed
+	}
+
+	h.logger.Warn("MCP tool call blocked by deny rule",
+		"session", sessionID,
+		"tool", params.Name,
+		"matched_rule", matched,
+	)
+
+	if h.config.AuditEnabled {
+		h.audit.LogRequest("mcp tool call denied",
+			"session", sessionID,
+			"tool", params.Name,
+			"matched_rule", matched,
+		)
+	}
+
+	// Inject a JSON-RPC error response onto the SSE stream.
+	// This preserves the MCP protocol contract: the client sent a request with
+	// an ID and expects a response with that same ID.
+	errResp := jsonRPCError{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+	}
+	errResp.Error.Code = -32001 // Server error (MCP spec uses -32xxx for server errors)
+	errResp.Error.Message = fmt.Sprintf("tool call denied by security policy: %s", matched)
+
+	errBody, err := json.Marshal(errResp)
+	if err != nil {
+		h.logger.Error("failed to marshal deny error response", "error", err)
+		return true // still denied, just can't send the error response
+	}
+
+	// Push the error response onto the SSE channel
+	select {
+	case sess.messages <- errBody:
+		// Successfully injected
+	default:
+		h.logger.Warn("SSE message channel full, dropping deny error response",
+			"session", sessionID,
+		)
+	}
+
+	return true
 }
 
 // spawnMCPServer starts the MCP server subprocess.

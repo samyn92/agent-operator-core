@@ -43,6 +43,16 @@ type CapabilitySidecarInfo struct {
 	ConfigMapName string
 }
 
+// MCPWorkspaceInfo holds workspace PVC information for MCP server capabilities
+// that need shared filesystem access with the agent pod.
+type MCPWorkspaceInfo struct {
+	// PVCName is the name of the shared workspace PVC
+	PVCName string
+	// MountPath is the path where the workspace is mounted in the agent container.
+	// Defaults to "/data/workspace".
+	MountPath string
+}
+
 // getImageConfig returns image settings from agent spec with defaults.
 // When spec.images.init is not set, the opencode image is used for the init
 // container. This enables the init container to copy pre-cached npm provider
@@ -98,7 +108,11 @@ func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
 // ConfigMap. Symlinked files (opencode.json, AGENTS.md) would update via kubelet
 // volume propagation, but tool files are copied by the init container and require
 // a restart to pick up changes.
-func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars []CapabilitySidecarInfo) *appsv1.Deployment {
+//
+// mcpWorkspaces contains PVC information for MCP server capabilities that need
+// shared filesystem access. These PVCs are mounted into the agent pod so that both
+// the agent and the MCP server pod have access to the same workspace files.
+func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
@@ -160,6 +174,31 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, sidecars
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
+		})
+	}
+
+	// Add MCP workspace PVC volumes.
+	// When an MCP server capability has workspace.enabled, both the MCP server pod
+	// and the agent pod mount the same RWX PVC. The agent uses it as its working
+	// directory so that files created by OpenCode are visible to the MCP server
+	// (e.g., git MCP server can add/commit files the agent wrote).
+	for i, ws := range mcpWorkspaces {
+		volName := fmt.Sprintf("mcp-workspace-%d", i)
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: ws.PVCName,
+				},
+			},
+		})
+		// Mount in the opencode main container (first container).
+		// The mount path is typically /data/workspace — the same path OpenCode uses
+		// as its WorkingDir. When an agent has an MCP workspace, this PVC replaces
+		// the default emptyDir/agent-PVC for the workspace subdirectory.
+		containers[0].VolumeMounts = append(containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: ws.MountPath,
 		})
 	}
 

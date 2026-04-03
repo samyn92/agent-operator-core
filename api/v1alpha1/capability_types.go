@@ -258,6 +258,50 @@ type MCPServerDeploymentSpec struct {
 	// Resources defines compute resources for the MCP server pod.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Workspace configures shared workspace access for the MCP server pod.
+	// When enabled, the MCP server pod mounts a PVC at /data/workspace, giving
+	// it filesystem access to the agent's working directory.
+	//
+	// This is essential for MCP servers that operate on the filesystem (e.g., git
+	// operations that need to add/commit/push files created by the agent).
+	//
+	// The PVC is shared between the agent pod and the MCP server pod:
+	//   - AccessMode is ReadWriteMany (RWX), requiring an RWX-capable storage class
+	//     (e.g., NFS, CephFS, Longhorn RWX).
+	//   - The operator creates the PVC and mounts it in both pods automatically.
+	//   - For clusters without RWX storage, use mode "local" instead (the MCP server
+	//     runs as a subprocess in the agent pod, inheriting its filesystem).
+	// +optional
+	Workspace *MCPServerWorkspace `json:"workspace,omitempty"`
+}
+
+// MCPServerWorkspace configures shared workspace storage for an MCP server Deployment.
+// Unlike Container sidecars (which share the agent pod's in-pod volume), MCP server pods
+// are separate Deployments and require a PVC with ReadWriteMany access for shared filesystem.
+type MCPServerWorkspace struct {
+	// Enabled provisions a shared workspace PVC for this MCP server.
+	// The PVC is mounted at /data/workspace in both the MCP server pod and the agent pod.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Size of the shared workspace PVC (default: 10Gi).
+	// +kubebuilder:default="10Gi"
+	// +optional
+	Size resource.Quantity `json:"size,omitempty"`
+
+	// StorageClass is the storage class for the shared PVC.
+	// Must support ReadWriteMany (RWX) access mode (e.g., NFS, CephFS, Longhorn RWX).
+	// If not specified, the cluster's default storage class is used.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// MountPath is the path where the workspace is mounted in the MCP server container.
+	// Defaults to "/data/workspace".
+	// +kubebuilder:default="/data/workspace"
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
 }
 
 // MCPOAuthConfig configures OAuth 2.0 for remote MCP servers.

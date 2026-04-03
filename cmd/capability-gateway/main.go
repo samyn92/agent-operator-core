@@ -3,9 +3,10 @@
 // The capability-gateway is a unified gateway for all capability types that need
 // an IO proxy between the agent and a capability backend. It supports two modes:
 //
-//   - cli: REST endpoint (/exec) that validates and executes shell commands.
+//   - cli: REST endpoint (/exec) that validates and executes commands.
 //     Used for Container-type capabilities (kubectl, gh, glab sidecars).
-//     Enforces shell metachar blocking, command prefix, rate limiting, audit.
+//     Enforces command prefix, deny patterns, rate limiting, audit.
+//     Commands are executed via exec.CommandContext (no shell).
 //
 //   - mcp: SSE endpoint (/sse) that bridges MCP stdio servers to HTTP/SSE.
 //     Used for server-mode MCP capabilities (operator-managed MCP server pods).
@@ -98,6 +99,25 @@ func main() {
 
 	case "mcp":
 		handler := mcp.NewHandler(config, logger)
+
+		// Start ConfigWatcher for hot-reloading MCP deny rules.
+		// MCP mode uses the same ConfigMap mount as CLI mode, but reads
+		// "mcp-deny-rules" instead of "command-prefix" / "deny-patterns".
+		if config.ConfigPath != "" {
+			cw, err := gateway.NewConfigWatcher(config.ConfigPath, logger)
+			if err != nil {
+				logger.Warn("failed to start config watcher, MCP deny rules disabled",
+					"path", config.ConfigPath,
+					"error", err,
+				)
+			} else {
+				cw.Start()
+				handler.SetConfigWatcher(cw)
+				defer cw.Stop()
+				logger.Info("config watcher started for MCP deny rules", "path", config.ConfigPath)
+			}
+		}
+
 		handler.Register(mux)
 
 		logger.Info("MCP mode active",

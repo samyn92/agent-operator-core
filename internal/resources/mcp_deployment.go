@@ -30,6 +30,20 @@ func MCPServerServiceName(capability *agentsv1alpha1.Capability) string {
 	return "mcp-" + capability.Name
 }
 
+// MCPServerWorkspacePVCName returns the PVC name for an MCP server's shared workspace.
+// This PVC is mounted by both the MCP server pod and the agent pod(s) that reference it.
+func MCPServerWorkspacePVCName(capability *agentsv1alpha1.Capability) string {
+	return "mcp-" + capability.Name + "-workspace"
+}
+
+// MCPServerHasWorkspace returns true if this MCP server capability has workspace enabled.
+func MCPServerHasWorkspace(capability *agentsv1alpha1.Capability) bool {
+	return capability.Spec.MCP != nil &&
+		capability.Spec.MCP.Server != nil &&
+		capability.Spec.MCP.Server.Workspace != nil &&
+		capability.Spec.MCP.Server.Workspace.Enabled
+}
+
 // MCPServerServiceURL returns the in-cluster URL for an MCP server capability's SSE endpoint.
 // This is what the agent connects to as a "remote" MCP server.
 func MCPServerServiceURL(capability *agentsv1alpha1.Capability) string {
@@ -42,6 +56,91 @@ func MCPServerServiceURL(capability *agentsv1alpha1.Capability) string {
 		capability.Namespace,
 		port,
 	)
+}
+
+// MCPServerConfigMapName returns the ConfigMap name for an MCP server capability.
+func MCPServerConfigMapName(capability *agentsv1alpha1.Capability) string {
+	return "mcp-" + capability.Name + "-config"
+}
+
+// MCPServerConfigMap creates a ConfigMap for an MCP server capability containing
+// gateway configuration such as MCP deny rules.
+//
+// The ConfigMap is mounted into the MCP server pod and hot-reloaded by the
+// capability-gateway's ConfigWatcher. This enables deny rule updates to take
+// effect without restarting the MCP server pod.
+//
+// MCP deny rules use a line-based format:
+//
+//	toolName                — deny all calls to this tool
+//	toolName:argName=pat    — deny when arguments[argName] matches the wildcard pattern
+//	toolName:*=pat          — deny when ANY argument value matches the wildcard pattern
+func MCPServerConfigMap(capability *agentsv1alpha1.Capability) *corev1.ConfigMap {
+	labels := mcpServerLabels(capability)
+
+	data := map[string]string{}
+
+	// Write MCP deny rules from the shared Capability.spec.permissions.deny field.
+	// For MCP capabilities, deny patterns are already in the MCP deny rule format
+	// (toolName, toolName:argName=pattern, etc.) because MCP doesn't have a
+	// "command prefix" concept — the CRD patterns are used as-is.
+	if capability.Spec.Permissions != nil && len(capability.Spec.Permissions.Deny) > 0 {
+		data["mcp-deny-rules"] = strings.Join(capability.Spec.Permissions.Deny, "\n")
+	}
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      MCPServerConfigMapName(capability),
+			Namespace: capability.Namespace,
+			Labels:    labels,
+		},
+		Data: data,
+	}
+}
+
+// MCPServerWorkspacePVC creates a PersistentVolumeClaim for shared workspace access
+// between an MCP server pod and the agent pod(s) that reference it.
+//
+// The PVC uses ReadWriteMany (RWX) access mode because it is mounted by two separate
+// pods (the MCP server Deployment and the agent Deployment). This requires an RWX-capable
+// storage class (NFS, CephFS, Longhorn RWX, etc.).
+//
+// The PVC is owned by the Capability (not the agent) so it persists across agent restarts
+// and can be shared with multiple agents if needed.
+func MCPServerWorkspacePVC(capability *agentsv1alpha1.Capability) *corev1.PersistentVolumeClaim {
+	labels := mcpServerLabels(capability)
+
+	ws := capability.Spec.MCP.Server.Workspace
+
+	// Default size: 10Gi
+	storageSize := resource.MustParse("10Gi")
+	if !ws.Size.IsZero() {
+		storageSize = ws.Size
+	}
+
+	var storageClass *string
+	if ws.StorageClass != "" {
+		storageClass = &ws.StorageClass
+	}
+
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      MCPServerWorkspacePVCName(capability),
+			Namespace: capability.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteMany,
+			},
+			StorageClassName: storageClass,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: storageSize,
+				},
+			},
+		},
+	}
 }
 
 // MCPServerDeployment creates a Deployment for an operator-managed MCP server capability.
@@ -119,6 +218,25 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		})
 	}
 
+	// Workspace configuration — if enabled, mount the shared PVC in the MCP server container.
+	// This gives the MCP server filesystem access to the agent's working directory.
+	workspaceEnabled := MCPServerHasWorkspace(capability)
+	workspaceMountPath := "/data/workspace"
+	if workspaceEnabled {
+		ws := server.Workspace
+		if ws.MountPath != "" {
+			workspaceMountPath = ws.MountPath
+		}
+		// Tell the MCP server subprocess where the workspace is.
+		// Many MCP servers use this to restrict operations to a specific directory.
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "WORKSPACE_PATH", Value: workspaceMountPath},
+			// HOME must be writable for git config, npm cache, etc.
+			corev1.EnvVar{Name: "HOME", Value: "/data"},
+			corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/data/.config"},
+		)
+	}
+
 	// Resource requirements for the MCP server pod
 	var resourceReqs corev1.ResourceRequirements
 	if server.Resources != nil {
@@ -160,6 +278,20 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 
 	// Main container: user's MCP server image + capability-gateway binary.
 	// The gateway spawns the MCP command as a subprocess and bridges stdio to SSE.
+	mainVolumeMounts := []corev1.VolumeMount{
+		{Name: "gateway-bin", MountPath: "/gateway", ReadOnly: true},
+		// ConfigMap with deny rules, mounted at /etc/tool (the gateway's default ConfigPath).
+		// Hot-reloaded by ConfigWatcher — updates take effect without pod restart.
+		{Name: "gateway-config", MountPath: "/etc/tool", ReadOnly: true},
+	}
+	if workspaceEnabled {
+		mainVolumeMounts = append(mainVolumeMounts,
+			corev1.VolumeMount{Name: "workspace", MountPath: workspaceMountPath},
+			// Writable /data for HOME (git config, caches, etc.)
+			corev1.VolumeMount{Name: "data-home", MountPath: "/data", SubPath: "home"},
+			corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"},
+		)
+	}
 	mainContainer := corev1.Container{
 		Name:            "mcp-server",
 		Image:           server.Image,
@@ -168,11 +300,9 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		Ports: []corev1.ContainerPort{
 			{Name: "sse", ContainerPort: port, Protocol: corev1.ProtocolTCP},
 		},
-		Env:       envVars,
-		Resources: resourceReqs,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "gateway-bin", MountPath: "/gateway", ReadOnly: true},
-		},
+		Env:             envVars,
+		Resources:       resourceReqs,
+		VolumeMounts:    mainVolumeMounts,
 		SecurityContext: hardenedSecurityContext(),
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
@@ -196,6 +326,67 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		},
 	}
 
+	// Volumes — gateway binary (always) + config (always) + workspace volumes (if enabled)
+	volumes := []corev1.Volume{
+		{
+			Name: "gateway-bin",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		// ConfigMap with mcp-deny-rules (and potentially other config).
+		// Mounted at /etc/tool which is the gateway's default ConfigPath.
+		{
+			Name: "gateway-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: MCPServerConfigMapName(capability),
+					},
+					// Optional: ConfigMap may not exist yet if no deny rules configured.
+					// The gateway's ConfigWatcher handles missing files gracefully.
+					Optional: boolPtr(true),
+				},
+			},
+		},
+	}
+	if workspaceEnabled {
+		volumes = append(volumes,
+			// Shared workspace PVC — mounted by both MCP server and agent pod
+			corev1.Volume{
+				Name: "workspace",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: MCPServerWorkspacePVCName(capability),
+					},
+				},
+			},
+			// Writable home directory for git config, npm cache, etc.
+			corev1.Volume{
+				Name: "data-home",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			// Writable tmp for tools
+			corev1.Volume{
+				Name: "tmp",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+		)
+	}
+
+	// Use Recreate strategy when workspace PVC is attached to avoid
+	// RWX contention during rolling updates.
+	strategy := appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+	}
+	if workspaceEnabled {
+		strategy.Type = appsv1.RecreateDeploymentStrategyType
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      MCPServerDeploymentName(capability),
@@ -204,6 +395,7 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: strategy,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -223,14 +415,7 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
 					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "gateway-bin",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
+					Volumes: volumes,
 				},
 			},
 		},

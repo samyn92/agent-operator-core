@@ -520,3 +520,394 @@ func TestReadFromServer_EmptyLines(t *testing.T) {
 		t.Fatal("timed out waiting for message")
 	}
 }
+
+// =============================================================================
+// MCP DENY ENFORCEMENT TESTS
+// =============================================================================
+
+// setupDenyTestHandler creates a handler with deny rules loaded from a temp config dir.
+func setupDenyTestHandler(t *testing.T, denyRules string) (*Handler, func()) {
+	t.Helper()
+
+	// Create a temp dir with mcp-deny-rules file
+	dir := t.TempDir()
+	if denyRules != "" {
+		if err := os.WriteFile(dir+"/mcp-deny-rules", []byte(denyRules), 0644); err != nil {
+			t.Fatalf("failed to write mcp-deny-rules: %v", err)
+		}
+	}
+
+	config := gateway.Config{
+		Mode:       "mcp",
+		Command:    "cat",
+		ConfigPath: dir,
+	}
+	handler := NewHandler(config, testLogger())
+
+	// Create and attach a ConfigWatcher (reads the deny rules on creation)
+	cw, err := gateway.NewConfigWatcher(dir, testLogger())
+	if err != nil {
+		t.Fatalf("failed to create config watcher: %v", err)
+	}
+	handler.SetConfigWatcher(cw)
+
+	cleanup := func() {
+		cw.Stop()
+	}
+	return handler, cleanup
+}
+
+func TestHandleMessage_DenyToolLevelBlock(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push\n")
+	defer cleanup()
+
+	// Create a fake session with a pipe (to verify message is NOT forwarded to stdin)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	sess := &session{
+		id:       "deny-test",
+		stdin:    pw,
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+	handler.sessions.Store("deny-test", sess)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Send a tools/call request for the denied tool
+	toolsCall := `{"jsonrpc":"2.0","method":"tools/call","id":42,"params":{"name":"git_push","arguments":{"remote":"origin","branch":"feat/x"}}}`
+	body := bytes.NewBufferString(toolsCall)
+	req := httptest.NewRequest("POST", "/message?sessionId=deny-test", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	// POST should return 202 (the error flows back via SSE, not HTTP response)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for denied tools/call, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The deny error should be injected on the SSE messages channel
+	select {
+	case msg := <-sess.messages:
+		var errResp map[string]interface{}
+		if err := json.Unmarshal(msg, &errResp); err != nil {
+			t.Fatalf("failed to unmarshal error response: %v", err)
+		}
+		// Verify it's a JSON-RPC error
+		if errResp["jsonrpc"] != "2.0" {
+			t.Errorf("expected jsonrpc 2.0, got %v", errResp["jsonrpc"])
+		}
+		// Verify the ID matches the request
+		if errResp["id"].(float64) != 42 {
+			t.Errorf("expected id 42, got %v", errResp["id"])
+		}
+		// Verify it has an error field
+		errField, ok := errResp["error"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected error field in response, got %v", errResp)
+		}
+		if errField["code"].(float64) != -32001 {
+			t.Errorf("expected error code -32001, got %v", errField["code"])
+		}
+		msg_str := errField["message"].(string)
+		if !strings.Contains(msg_str, "denied by security policy") {
+			t.Errorf("expected deny message, got %q", msg_str)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deny error on SSE channel")
+	}
+}
+
+func TestHandleMessage_DenyArgLevelBlock(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push:branch=main\ngit_push:branch=master\n")
+	defer cleanup()
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	sess := &session{
+		id:       "deny-arg-test",
+		stdin:    pw,
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+	handler.sessions.Store("deny-arg-test", sess)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Send a tools/call request pushing to main — should be denied
+	toolsCall := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"git_push","arguments":{"remote":"origin","branch":"main"}}}`
+	body := bytes.NewBufferString(toolsCall)
+	req := httptest.NewRequest("POST", "/message?sessionId=deny-arg-test", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+
+	// Should get deny error on SSE channel
+	select {
+	case msg := <-sess.messages:
+		if !strings.Contains(string(msg), "denied by security policy") {
+			t.Errorf("expected deny message, got %q", string(msg))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for deny error")
+	}
+}
+
+func TestHandleMessage_DenyArgLevelAllow(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push:branch=main\ngit_push:branch=master\n")
+	defer cleanup()
+
+	// Use a real pipe so the forwarded message doesn't panic
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	sess := &session{
+		id:       "deny-allow-test",
+		stdin:    pw,
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+	handler.sessions.Store("deny-allow-test", sess)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Drain the pipe reader so writes don't block
+	readCh := make(chan string, 10)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if err != nil {
+				return
+			}
+			readCh <- string(buf[:n])
+		}
+	}()
+
+	// Send a tools/call request pushing to feature branch — should be ALLOWED
+	toolsCall := `{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"git_push","arguments":{"remote":"origin","branch":"feat/my-feature"}}}`
+	body := bytes.NewBufferString(toolsCall)
+	req := httptest.NewRequest("POST", "/message?sessionId=deny-allow-test", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+
+	// Message should have been forwarded to MCP server stdin (not blocked)
+	select {
+	case data := <-readCh:
+		if !strings.Contains(data, "git_push") {
+			t.Errorf("expected forwarded message to contain git_push, got %q", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded message on stdin")
+	}
+
+	// No error should be on the SSE channel
+	select {
+	case msg := <-sess.messages:
+		t.Fatalf("expected no message on SSE channel (message was allowed), got %q", string(msg))
+	default:
+		// Good — no message
+	}
+}
+
+func TestHandleMessage_NonToolsCallPassesThrough(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push\n")
+	defer cleanup()
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	sess := &session{
+		id:       "passthrough-test",
+		stdin:    pw,
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+	handler.sessions.Store("passthrough-test", sess)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Drain stdin
+	readCh := make(chan string, 10)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if err != nil {
+				return
+			}
+			readCh <- string(buf[:n])
+		}
+	}()
+
+	// Send an "initialize" message (not tools/call) — should pass through
+	initMsg := `{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"capabilities":{}}}`
+	body := bytes.NewBufferString(initMsg)
+	req := httptest.NewRequest("POST", "/message?sessionId=passthrough-test", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+
+	// Should be forwarded to stdin
+	select {
+	case data := <-readCh:
+		if !strings.Contains(data, "initialize") {
+			t.Errorf("expected initialize message, got %q", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded message")
+	}
+}
+
+func TestHandleMessage_NoDenyRulesPassesThrough(t *testing.T) {
+	// No deny rules — everything should pass through
+	handler, cleanup := setupDenyTestHandler(t, "")
+	defer cleanup()
+
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	sess := &session{
+		id:       "norules-test",
+		stdin:    pw,
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+	handler.sessions.Store("norules-test", sess)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	// Drain stdin
+	readCh := make(chan string, 10)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if err != nil {
+				return
+			}
+			readCh <- string(buf[:n])
+		}
+	}()
+
+	// Send a tools/call for git_push — should pass through (no deny rules)
+	toolsCall := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"git_push","arguments":{"branch":"main"}}}`
+	body := bytes.NewBufferString(toolsCall)
+	req := httptest.NewRequest("POST", "/message?sessionId=norules-test", body)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+
+	// Should be forwarded to stdin
+	select {
+	case data := <-readCh:
+		if !strings.Contains(data, "git_push") {
+			t.Errorf("expected git_push message, got %q", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for forwarded message")
+	}
+}
+
+func TestCheckToolsCallDeny_ErrorResponseFormat(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push:branch=main\n")
+	defer cleanup()
+
+	sess := &session{
+		id:       "format-test",
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+
+	body := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":"req-123","params":{"name":"git_push","arguments":{"branch":"main"}}}`)
+	rules := handler.mcpDenyRules()
+
+	denied := handler.checkToolsCallDeny(body, rules, sess, "format-test")
+	if !denied {
+		t.Fatal("expected deny, got allow")
+	}
+
+	// Read the error response from the channel
+	select {
+	case msg := <-sess.messages:
+		var errResp jsonRPCError
+		if err := json.Unmarshal(msg, &errResp); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		if errResp.JSONRPC != "2.0" {
+			t.Errorf("expected jsonrpc 2.0, got %q", errResp.JSONRPC)
+		}
+		// ID should be the string "req-123" (preserved from request)
+		var id string
+		if err := json.Unmarshal(errResp.ID, &id); err != nil {
+			t.Fatalf("failed to unmarshal ID: %v", err)
+		}
+		if id != "req-123" {
+			t.Errorf("expected id 'req-123', got %q", id)
+		}
+		if errResp.Error.Code != -32001 {
+			t.Errorf("expected error code -32001, got %d", errResp.Error.Code)
+		}
+		if !strings.Contains(errResp.Error.Message, "denied by security policy") {
+			t.Errorf("expected deny policy message, got %q", errResp.Error.Message)
+		}
+	default:
+		t.Fatal("expected error message on channel, got none")
+	}
+}
+
+func TestCheckToolsCallDeny_NotToolsCall(t *testing.T) {
+	handler, cleanup := setupDenyTestHandler(t, "git_push\n")
+	defer cleanup()
+
+	sess := &session{
+		id:       "not-tools-call",
+		messages: make(chan []byte, 64),
+		done:     make(chan struct{}),
+	}
+
+	rules := handler.mcpDenyRules()
+
+	// "initialize" method — should not be denied
+	body := []byte(`{"jsonrpc":"2.0","method":"initialize","id":1}`)
+	if handler.checkToolsCallDeny(body, rules, sess, "test") {
+		t.Error("expected initialize to pass through")
+	}
+
+	// "tools/list" method — should not be denied
+	body = []byte(`{"jsonrpc":"2.0","method":"tools/list","id":2}`)
+	if handler.checkToolsCallDeny(body, rules, sess, "test") {
+		t.Error("expected tools/list to pass through")
+	}
+
+	// "notifications/initialized" — should not be denied
+	body = []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	if handler.checkToolsCallDeny(body, rules, sess, "test") {
+		t.Error("expected notification to pass through")
+	}
+}

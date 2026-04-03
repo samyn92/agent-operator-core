@@ -1,7 +1,11 @@
 // Package cli implements the CLI mode for the capability gateway.
 // This mode provides an HTTP REST endpoint (/exec) that validates and executes
-// shell commands, enforcing security policies (shell metachar blocking,
-// command prefix, rate limiting, audit logging).
+// commands, enforcing security policies (command prefix, deny patterns,
+// rate limiting, audit logging).
+//
+// Commands are executed via exec.CommandContext (no shell), so shell metacharacters
+// have no special meaning — security is enforced through command prefix requirements
+// and deny-pattern matching on the full command string.
 package cli
 
 import (
@@ -76,6 +80,15 @@ func (h *Handler) commandPrefix() string {
 	return h.config.CommandPrefix
 }
 
+// denyPatterns returns the current deny patterns from the ConfigWatcher.
+// Returns nil if no watcher is configured or no deny-patterns file exists.
+func (h *Handler) denyPatterns() []string {
+	if h.configWatcher != nil {
+		return h.configWatcher.DenyPatterns()
+	}
+	return nil
+}
+
 // Register adds CLI mode routes to the given mux.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /exec", h.handleExec)
@@ -116,14 +129,19 @@ func (h *Handler) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	command := strings.TrimSpace(req.Command)
 
-	// Step 1: Check for dangerous shell metacharacters
-	if reason := cmdvalidator.CheckShellMeta(command); reason != "" {
-		h.logger.Warn("command blocked by shell meta check",
-			"command", command,
-			"reason", reason,
-		)
-		h.sendError(w, http.StatusForbidden, "command not allowed: "+reason)
-		return
+	// Step 1: Check against deny patterns (security backstop).
+	// This catches commands that match deny rules even if OpenCode's permission
+	// system was bypassed by a runtime "Always Allow" approval. The deny patterns
+	// are loaded from the ConfigMap and hot-reloaded by ConfigWatcher.
+	if patterns := h.denyPatterns(); len(patterns) > 0 {
+		if matched := cmdvalidator.CheckDenyPatterns(command, patterns); matched != "" {
+			h.logger.Warn("command blocked by deny pattern",
+				"command", command,
+				"matched_pattern", matched,
+			)
+			h.sendError(w, http.StatusForbidden, "command denied by security policy: matches deny pattern "+matched)
+			return
+		}
 	}
 
 	// Step 2: Handle command prefix enforcement

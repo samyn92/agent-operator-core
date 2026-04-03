@@ -229,3 +229,288 @@ func TestConfigWatcher_TrimWhitespace(t *testing.T) {
 		t.Fatalf("expected trimmed 'kubectl', got %q", got)
 	}
 }
+
+// =============================================================================
+// deny-patterns TESTS
+// =============================================================================
+
+func TestConfigWatcher_DenyPatterns_InitialLoad(t *testing.T) {
+	dir := t.TempDir()
+	patterns := "git -C * push * main\ngit -C * push * master\n"
+	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(patterns), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.DenyPatterns()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 deny patterns, got %d: %v", len(got), got)
+	}
+	if got[0] != "git -C * push * main" {
+		t.Fatalf("expected first pattern 'git -C * push * main', got %q", got[0])
+	}
+	if got[1] != "git -C * push * master" {
+		t.Fatalf("expected second pattern 'git -C * push * master', got %q", got[1])
+	}
+}
+
+func TestConfigWatcher_DenyPatterns_Empty(t *testing.T) {
+	dir := t.TempDir()
+	// No deny-patterns file
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.DenyPatterns()
+	if got != nil {
+		t.Fatalf("expected nil deny patterns when file doesn't exist, got %v", got)
+	}
+}
+
+func TestConfigWatcher_DenyPatterns_SkipsCommentsAndBlanks(t *testing.T) {
+	dir := t.TempDir()
+	patterns := "# This is a comment\ngit -C * push * main\n\n  \n# Another comment\ngit -C * push * master\n"
+	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(patterns), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.DenyPatterns()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 patterns (skipping comments/blanks), got %d: %v", len(got), got)
+	}
+}
+
+func TestConfigWatcher_DenyPatterns_HotReload(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte("git -C * push * main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw.Start()
+	defer cw.Stop()
+
+	got := cw.DenyPatterns()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 initial pattern, got %d", len(got))
+	}
+
+	// Set up reload detection
+	reloaded := make(chan string, 1)
+	cw.SetOnReload(func(key, value string) {
+		if key == "deny-patterns" {
+			reloaded <- value
+		}
+	})
+
+	// Update the file
+	newPatterns := "git -C * push * main\ngit -C * push * master\ngit -C * push --force *"
+	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(newPatterns), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-reloaded:
+		// ok
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for deny-patterns reload")
+	}
+
+	got = cw.DenyPatterns()
+	if len(got) != 3 {
+		t.Fatalf("expected 3 patterns after reload, got %d: %v", len(got), got)
+	}
+}
+
+func TestConfigWatcher_DenyPatterns_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte("git -C * push * main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw.Start()
+	defer cw.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = cw.DenyPatterns()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// =============================================================================
+// mcp-deny-rules TESTS
+// =============================================================================
+
+func TestConfigWatcher_MCPDenyRules_InitialLoad(t *testing.T) {
+	dir := t.TempDir()
+	rules := "git_push:branch=main\ngit_push:branch=master\ngit_reset_hard\n"
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte(rules), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.MCPDenyRules()
+	if len(got) != 3 {
+		t.Fatalf("expected 3 MCP deny rules, got %d: %v", len(got), got)
+	}
+	if got[0].Tool != "git_push" || got[0].ArgName != "branch" || got[0].ArgPattern != "main" {
+		t.Errorf("rule[0] = %+v, expected git_push:branch=main", got[0])
+	}
+	if got[1].Tool != "git_push" || got[1].ArgName != "branch" || got[1].ArgPattern != "master" {
+		t.Errorf("rule[1] = %+v, expected git_push:branch=master", got[1])
+	}
+	if got[2].Tool != "git_reset_hard" || got[2].ArgName != "" {
+		t.Errorf("rule[2] = %+v, expected tool-level git_reset_hard", got[2])
+	}
+}
+
+func TestConfigWatcher_MCPDenyRules_Empty(t *testing.T) {
+	dir := t.TempDir()
+	// No mcp-deny-rules file
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.MCPDenyRules()
+	if got != nil {
+		t.Fatalf("expected nil MCP deny rules when file doesn't exist, got %v", got)
+	}
+}
+
+func TestConfigWatcher_MCPDenyRules_HotReload(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw.Start()
+	defer cw.Stop()
+
+	got := cw.MCPDenyRules()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 initial rule, got %d", len(got))
+	}
+
+	// Set up reload detection
+	reloaded := make(chan string, 1)
+	cw.SetOnReload(func(key, value string) {
+		if key == "mcp-deny-rules" {
+			reloaded <- value
+		}
+	})
+
+	// Update the file with more rules
+	newRules := "git_push\ngit_push:branch=main\ngit_push:branch=master\ngit_reset_hard"
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte(newRules), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-reloaded:
+		// ok
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for mcp-deny-rules reload")
+	}
+
+	got = cw.MCPDenyRules()
+	if len(got) != 4 {
+		t.Fatalf("expected 4 rules after reload, got %d: %v", len(got), got)
+	}
+}
+
+func TestConfigWatcher_MCPDenyRules_SkipsInvalidRules(t *testing.T) {
+	dir := t.TempDir()
+	// Mix of valid and invalid rules
+	rules := "git_push\n:bad_rule\ngit_merge:branch=main\ngit_push:missing_equals\n"
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte(rules), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	got := cw.MCPDenyRules()
+	// Should only have the 2 valid rules (invalid ones are skipped with warnings)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 valid rules (invalid skipped), got %d: %v", len(got), got)
+	}
+}
+
+func TestConfigWatcher_MCPDenyRules_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push:branch=main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw.Start()
+	defer cw.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = cw.MCPDenyRules()
+			}
+		}()
+	}
+	wg.Wait()
+}

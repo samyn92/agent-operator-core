@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/samyn92/agent-operator-core/pkg/gateway"
@@ -39,40 +40,12 @@ func TestHandleExec(t *testing.T) {
 			expectSuccess:  true,
 		},
 		{
-			name: "shell metacharacter blocked - semicolon",
+			name: "command with semicolons allowed (no shell injection via exec)",
 			request: ExecRequest{
-				Command: "echo hello; rm -rf /",
+				Command: "echo hello; world",
 			},
-			expectedStatus: http.StatusForbidden,
-			expectSuccess:  false,
-			expectError:    "command not allowed",
-		},
-		{
-			name: "shell metacharacter blocked - pipe",
-			request: ExecRequest{
-				Command: "cat /etc/passwd | grep root",
-			},
-			expectedStatus: http.StatusForbidden,
-			expectSuccess:  false,
-			expectError:    "command not allowed",
-		},
-		{
-			name: "shell metacharacter blocked - backtick",
-			request: ExecRequest{
-				Command: "echo `whoami`",
-			},
-			expectedStatus: http.StatusForbidden,
-			expectSuccess:  false,
-			expectError:    "command not allowed",
-		},
-		{
-			name: "shell metacharacter blocked - dollar paren",
-			request: ExecRequest{
-				Command: "echo $(whoami)",
-			},
-			expectedStatus: http.StatusForbidden,
-			expectSuccess:  false,
-			expectError:    "command not allowed",
+			expectedStatus: http.StatusOK,
+			expectSuccess:  true,
 		},
 		{
 			name: "empty command",
@@ -383,5 +356,122 @@ func TestRegister(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Errorf("expected success=true via mux (error: %s)", resp.Error)
+	}
+}
+
+// =============================================================================
+// DENY PATTERN ENFORCEMENT TESTS
+// =============================================================================
+
+func TestHandleExecDenyPatterns(t *testing.T) {
+	// Set up a config watcher with deny patterns
+	dir := t.TempDir()
+	denyPatterns := "git -C * push * main\ngit -C * push * master\ngit -C * push --force *"
+	if err := os.WriteFile(dir+"/deny-patterns", []byte(denyPatterns), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/command-prefix", []byte("git -C /workspace "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cw, err := gateway.NewConfigWatcher(dir, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cw.Stop()
+
+	handler := newTestHandler(gateway.Config{
+		ToolName:      "git-tool",
+		CommandPrefix: "git -C /workspace",
+	})
+	handler.SetConfigWatcher(cw)
+
+	tests := []struct {
+		name           string
+		command        string
+		expectedStatus int
+		expectError    string // expected error substring (for denied commands)
+	}{
+		{
+			name:           "push to main blocked",
+			command:        "git -C /workspace push origin main",
+			expectedStatus: http.StatusForbidden,
+			expectError:    "command denied by security policy",
+		},
+		{
+			name:           "push to master blocked",
+			command:        "git -C /workspace push origin master",
+			expectedStatus: http.StatusForbidden,
+			expectError:    "command denied by security policy",
+		},
+		{
+			name:           "force push blocked",
+			command:        "git -C /workspace push --force origin feature",
+			expectedStatus: http.StatusForbidden,
+			expectError:    "command denied by security policy",
+		},
+		{
+			name:           "push to feature branch allowed through gateway",
+			command:        "git -C /workspace push origin feature-branch",
+			expectedStatus: http.StatusOK, // Gateway allows it (command may fail at exec, that's OK)
+		},
+		{
+			name:           "non-push command allowed through gateway",
+			command:        "git -C /workspace add test.txt",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "status command allowed through gateway",
+			command:        "git -C /workspace status",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "commit command allowed through gateway",
+			command:        "git -C /workspace commit -m test",
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(ExecRequest{Command: tt.command})
+			req := httptest.NewRequest("POST", "/exec", bytes.NewReader(body))
+			w := httptest.NewRecorder()
+
+			handler.handleExec(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			var resp ExecResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+
+			if tt.expectError != "" {
+				if resp.Error == "" || !strings.Contains(resp.Error, tt.expectError) {
+					t.Errorf("expected error containing %q, got %q", tt.expectError, resp.Error)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleExecNoDenyPatterns(t *testing.T) {
+	// Without deny patterns, all commands should pass (if other checks pass)
+	handler := newTestHandler(gateway.Config{
+		ToolName: "test-tool",
+	})
+
+	body, _ := json.Marshal(ExecRequest{Command: "echo hello"})
+	req := httptest.NewRequest("POST", "/exec", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	handler.handleExec(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 without deny patterns, got %d", w.Code)
 	}
 }

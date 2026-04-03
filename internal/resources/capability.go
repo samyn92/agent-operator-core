@@ -2,6 +2,7 @@ package resources
 
 import (
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,8 +11,10 @@ import (
 )
 
 // CapabilityConfigMap creates a ConfigMap for a container capability (sidecar) with gateway config.
-// Only contains command-prefix and instructions — allow/deny/approve patterns
-// are handled by OpenCode's native permission system via opencode.json.
+// Contains command-prefix, instructions, and deny-patterns for gateway-side enforcement.
+// Allow/approve patterns are handled by OpenCode's native permission system via opencode.json.
+// Deny patterns are ALSO enforced by the gateway sidecar as a security backstop — this ensures
+// deny rules cannot be bypassed by OpenCode's runtime "Always Allow" approvals.
 func CapabilityConfigMap(agent *agentsv1alpha1.Agent, capability *agentsv1alpha1.Capability, alias string) *corev1.ConfigMap {
 	toolName := capability.Name
 	if alias != "" {
@@ -26,8 +29,26 @@ func CapabilityConfigMap(agent *agentsv1alpha1.Agent, capability *agentsv1alpha1
 	}
 
 	// Container capabilities have a command prefix
+	var commandPrefix string
 	if capability.Spec.Container != nil {
-		data["command-prefix"] = capability.Spec.Container.CommandPrefix
+		commandPrefix = capability.Spec.Container.CommandPrefix
+		data["command-prefix"] = commandPrefix
+	}
+
+	// Write deny patterns as a newline-separated file for the gateway sidecar.
+	// CRD patterns don't include the command prefix (e.g., "push * main"),
+	// but the gateway sees full commands (e.g., "git -C /path push origin main"),
+	// so we prepend the prefix to each pattern.
+	if capability.Spec.Permissions != nil && len(capability.Spec.Permissions.Deny) > 0 {
+		var patterns []string
+		for _, pattern := range capability.Spec.Permissions.Deny {
+			fullPattern := pattern
+			if commandPrefix != "" {
+				fullPattern = commandPrefix + pattern
+			}
+			patterns = append(patterns, fullPattern)
+		}
+		data["deny-patterns"] = strings.Join(patterns, "\n")
 	}
 
 	return &corev1.ConfigMap{

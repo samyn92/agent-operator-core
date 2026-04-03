@@ -153,6 +153,9 @@ type ResolvedCapabilities struct {
 	Sidecars []resources.CapabilitySidecarInfo
 	// MCPEntries are MCP capabilities converted to opencode.json MCP entries
 	MCPEntries map[string]resources.MCPEntry
+	// MCPWorkspaces are MCP server capabilities with shared workspace PVCs.
+	// These PVCs need to be mounted in the agent pod for shared filesystem access.
+	MCPWorkspaces []resources.MCPWorkspaceInfo
 	// SkillFiles are Skill capabilities with their SKILL.md content (name -> content)
 	SkillFiles map[string]string
 	// ToolFiles are Tool capabilities with their TypeScript code (name -> code)
@@ -217,6 +220,18 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 			entry := resources.MCPCapabilityToMCPEntry(capability)
 			if entry != nil {
 				resolved.MCPEntries[name] = *entry
+			}
+			// Track workspace PVCs for server-mode MCP capabilities.
+			// These need to be mounted in the agent pod for shared filesystem access.
+			if resources.MCPServerHasWorkspace(capability) {
+				mountPath := "/data/workspace"
+				if capability.Spec.MCP.Server.Workspace.MountPath != "" {
+					mountPath = capability.Spec.MCP.Server.Workspace.MountPath
+				}
+				resolved.MCPWorkspaces = append(resolved.MCPWorkspaces, resources.MCPWorkspaceInfo{
+					PVCName:   resources.MCPServerWorkspacePVCName(capability),
+					MountPath: mountPath,
+				})
 			}
 
 		case agentsv1alpha1.CapabilityTypeSkill:
@@ -617,7 +632,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, agent *agents
 	desiredConfigMap := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
 	configMapHash := resources.HashConfigMapData(desiredConfigMap.Data)
 
-	desired := resources.AgentDeployment(agent, configMapHash, resolved.Sidecars)
+	desired := resources.AgentDeployment(agent, configMapHash, resolved.Sidecars, resolved.MCPWorkspaces)
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}

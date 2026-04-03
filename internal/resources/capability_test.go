@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -121,6 +122,96 @@ func TestCapabilityConfigMap_Labels(t *testing.T) {
 		if cm.Labels[k] != v {
 			t.Errorf("label %q: expected %q, got %q", k, v, cm.Labels[k])
 		}
+	}
+}
+
+func TestCapabilityConfigMap_DenyPatterns(t *testing.T) {
+	agent := &agentsv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "default"},
+	}
+	cap := &agentsv1alpha1.Capability{
+		ObjectMeta: metav1.ObjectMeta{Name: "git-contributor", Namespace: "default"},
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:        agentsv1alpha1.CapabilityTypeContainer,
+			Description: "Git contributor",
+			Container: &agentsv1alpha1.ContainerCapabilitySpec{
+				Image:         "alpine/git:latest",
+				CommandPrefix: "git -C /workspace ",
+			},
+			Permissions: &agentsv1alpha1.CapabilityPermissions{
+				Allow: []string{"status *", "add *"},
+				Deny:  []string{"push * main", "push * master", "push --force *"},
+			},
+		},
+	}
+
+	cm := CapabilityConfigMap(agent, cap, "")
+
+	// Should have deny-patterns key with prefixed patterns
+	denyPatterns, ok := cm.Data["deny-patterns"]
+	if !ok {
+		t.Fatal("expected deny-patterns key in ConfigMap data")
+	}
+
+	lines := strings.Split(denyPatterns, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 deny patterns, got %d: %v", len(lines), lines)
+	}
+
+	// Patterns should be prefixed with command prefix
+	if lines[0] != "git -C /workspace push * main" {
+		t.Fatalf("expected 'git -C /workspace push * main', got %q", lines[0])
+	}
+	if lines[1] != "git -C /workspace push * master" {
+		t.Fatalf("expected 'git -C /workspace push * master', got %q", lines[1])
+	}
+	if lines[2] != "git -C /workspace push --force *" {
+		t.Fatalf("expected 'git -C /workspace push --force *', got %q", lines[2])
+	}
+}
+
+func TestCapabilityConfigMap_NoDenyPatterns(t *testing.T) {
+	agent := &agentsv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "default"},
+	}
+	cap := &agentsv1alpha1.Capability{
+		ObjectMeta: metav1.ObjectMeta{Name: "kubectl-readonly", Namespace: "default"},
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type:      agentsv1alpha1.CapabilityTypeContainer,
+			Container: &agentsv1alpha1.ContainerCapabilitySpec{Image: "bitnami/kubectl:1.30"},
+		},
+	}
+
+	cm := CapabilityConfigMap(agent, cap, "")
+
+	if _, ok := cm.Data["deny-patterns"]; ok {
+		t.Fatal("should NOT have deny-patterns key when no deny patterns configured")
+	}
+}
+
+func TestCapabilityConfigMap_DenyPatternsNoPrefix(t *testing.T) {
+	agent := &agentsv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "default"},
+	}
+	cap := &agentsv1alpha1.Capability{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-tool", Namespace: "default"},
+		Spec: agentsv1alpha1.CapabilitySpec{
+			Type: agentsv1alpha1.CapabilityTypeContainer,
+			Container: &agentsv1alpha1.ContainerCapabilitySpec{
+				Image: "custom:latest",
+				// No CommandPrefix
+			},
+			Permissions: &agentsv1alpha1.CapabilityPermissions{
+				Deny: []string{"delete *"},
+			},
+		},
+	}
+
+	cm := CapabilityConfigMap(agent, cap, "")
+
+	denyPatterns := cm.Data["deny-patterns"]
+	if denyPatterns != "delete *" {
+		t.Fatalf("expected 'delete *' (no prefix), got %q", denyPatterns)
 	}
 }
 

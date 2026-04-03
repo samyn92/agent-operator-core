@@ -231,6 +231,10 @@ export default TelemetryPlugin
 // This makes the source appear as a first-class tool to the LLM.
 // Uses OpenCode's native ctx.ask() for permission prompts (Allow Once / Always Allow / Deny).
 // The capability-gateway sidecar remains as a security backstop for deny-list enforcement.
+//
+// When deny patterns are present, the generated alwaysPattern function is deny-aware:
+// it checks that the candidate "Always Allow" pattern would not match any denied command,
+// preventing the runtime "Always Allow" approval from overriding deny rules via findLast().
 func GenerateSourceTool(src SourceInfo) string {
 	argName := "command"
 
@@ -246,6 +250,113 @@ func GenerateSourceTool(src SourceInfo) string {
 
 	argDescription := fmt.Sprintf("The %s command to execute", src.Name)
 
+	// Build the deny patterns array for the generated code.
+	// These are the full patterns (with command prefix already applied).
+	var denyPatternsJS string
+	if len(src.Deny) > 0 {
+		var parts []string
+		for _, pattern := range src.Deny {
+			fullPattern := pattern
+			if src.CommandPrefix != "" {
+				fullPattern = src.CommandPrefix + pattern
+			}
+			// JSON-encode to handle special chars safely
+			encoded, _ := json.Marshal(fullPattern)
+			parts = append(parts, string(encoded))
+		}
+		denyPatternsJS = strings.Join(parts, ", ")
+	}
+
+	// Choose which alwaysPattern implementation to use
+	var alwaysPatternBlock string
+	if len(src.Deny) > 0 {
+		// Deny-aware version: includes wildcardMatch and checks candidates against deny patterns
+		alwaysPatternBlock = fmt.Sprintf(`
+const DENY_PATTERNS: string[] = [%s]
+
+/**
+ * Wildcard match — same semantics as OpenCode's Wildcard.match.
+ * "*" matches any chars, "?" matches one char, trailing " *" is optional.
+ */
+function wildcardMatch(str: string, pattern: string): boolean {
+  str = str.replace(/\\/g, "/")
+  pattern = pattern.replace(/\\/g, "/")
+  // Escape regex-special chars EXCEPT * and ? (which are wildcard operators)
+  let escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+  // Now convert wildcard operators to regex
+  escaped = escaped.replace(/\*/g, ".*").replace(/\?/g, ".")
+  if (escaped.endsWith(" .*")) {
+    escaped = escaped.slice(0, -3) + "( .*)?"
+  }
+  return new RegExp("^" + escaped + "$").test(str)
+}
+
+/**
+ * Check if a candidate "Always Allow" pattern could match any denied command.
+ * We test by generating a representative denied command from each deny pattern
+ * (replacing wildcards with concrete tokens) and checking if the candidate
+ * pattern would match it.
+ */
+function wouldMatchDenied(candidate: string): boolean {
+  for (const denyPattern of DENY_PATTERNS) {
+    // A deny pattern like "git -C * push * main" represents a class of commands.
+    // If our candidate "git -C *" (with trailing " *" optional) would match
+    // a concrete instance of the denied command, it's too broad.
+    // Simple check: generate a concrete example from the deny pattern
+    // by replacing "*" with "x" and "?" with "y", then test the candidate against it.
+    const concrete = denyPattern.replace(/\*/g, "x").replace(/\?/g, "y")
+    if (wildcardMatch(concrete, candidate)) {
+      return true
+    }
+    // Also check if the candidate pattern is a prefix-match of the deny pattern.
+    // e.g., candidate "git -C *" matches "git -C /path push origin main"
+    // We test against a more realistic concrete example too.
+    const concrete2 = denyPattern.replace(/\*/g, "some/path").replace(/\?/g, "z")
+    if (wildcardMatch(concrete2, candidate)) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Generate a deny-aware "Always Allow" pattern from a command.
+ * Starts with 2-token prefix + " *" (like BashArity), then progressively
+ * adds more tokens until the pattern doesn't overlap with deny patterns.
+ * Falls back to the exact command if no safe prefix is found.
+ */
+function alwaysPattern(command: string): string {
+  const tokens = command.trim().split(/\s+/)
+
+  // Try increasingly specific prefixes: 2 tokens, 3 tokens, ...
+  for (let n = Math.min(2, tokens.length); n < tokens.length; n++) {
+    const candidate = tokens.slice(0, n).join(" ") + " *"
+    if (!wouldMatchDenied(candidate)) {
+      return candidate
+    }
+  }
+
+  // No safe prefix found — fall back to exact command.
+  // This means "Always Allow" only approves this exact command, which is safe
+  // because deny patterns only match broad classes.
+  return command
+}`, denyPatternsJS)
+	} else {
+		// Simple version (no deny patterns): classic BashArity logic
+		alwaysPatternBlock = `
+/**
+ * Generate the "Always Allow" pattern from a command.
+ * Uses BashArity-style logic: take the first 2 tokens (e.g. "kubectl get")
+ * and append " *" so clicking "Always Allow" approves all similar commands.
+ * Example: "kubectl get pods -A -o wide" -> "kubectl get *"
+ */
+function alwaysPattern(command: string): string {
+  const tokens = command.trim().split(/\s+/)
+  const prefixLen = Math.min(2, tokens.length)
+  return tokens.slice(0, prefixLen).join(" ") + " *"
+}`
+	}
+
 	return fmt.Sprintf(`/**
  * OpenCode Custom Tool: %s
  * Auto-generated by Agent Operator
@@ -255,20 +366,7 @@ func GenerateSourceTool(src SourceInfo) string {
 import { tool } from "@opencode-ai/plugin"
 
 const SERVICE_URL = "%s"
-
-/**
- * Generate the "Always Allow" pattern from a command.
- * Uses BashArity-style logic: take the first 2 tokens (e.g. "kubectl get")
- * and append " *" so clicking "Always Allow" approves all similar commands.
- * Example: "kubectl get pods -A -o wide" -> "kubectl get *"
- */
-function alwaysPattern(command: string): string {
-  const tokens = command.trim().split(/\s+/)
-  // For commands with a CLI prefix (like "kubectl"), arity is typically 2
-  // meaning "kubectl get" is the meaningful prefix
-  const prefixLen = Math.min(2, tokens.length)
-  return tokens.slice(0, prefixLen).join(" ") + " *"
-}
+%s
 
 export default tool({
   description: `+"`%s`"+`,
@@ -292,7 +390,7 @@ export default tool({
     })
 
     // Execute via capability-gateway sidecar (security backstop).
-    // The gateway enforces deny-lists and blocks shell metacharacters
+    // The gateway enforces deny-lists and command prefix requirements
     // even if the permission prompt was bypassed.
     const response = await fetch(SERVICE_URL + "/exec", {
       method: "POST",
@@ -312,7 +410,7 @@ export default tool({
     return result.stdout || ""
   },
 })
-`, src.Name, src.ServiceURL, description, argName, argDescription, commandExpr, src.Name)
+`, src.Name, src.ServiceURL, alwaysPatternBlock, description, argName, argDescription, commandExpr, src.Name)
 }
 
 // AgentConfigMap creates a ConfigMap for the agent
