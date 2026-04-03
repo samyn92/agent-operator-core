@@ -1062,12 +1062,13 @@ func TestInitContainer_ScriptContent(t *testing.T) {
 	if !strings.Contains(script, "/data/workspace/.opencode/skills") {
 		t.Fatal("expected mkdir for skills dir")
 	}
-	// opencode.json and AGENTS.md are symlinked (not copied) for hot-reload support
-	if !strings.Contains(script, "ln -sf /config/opencode.json /data/.config/opencode/opencode.json") {
-		t.Fatal("expected symlink for opencode.json")
+	// opencode.json and AGENTS.md are copied (not symlinked) because the
+	// /config volume is only mounted in the init container
+	if !strings.Contains(script, "cp /config/opencode.json /data/.config/opencode/opencode.json") {
+		t.Fatal("expected cp for opencode.json")
 	}
-	if !strings.Contains(script, "ln -sf /config/AGENTS.md /data/workspace/AGENTS.md") {
-		t.Fatal("expected symlink for AGENTS.md")
+	if !strings.Contains(script, "cp /config/AGENTS.md /data/workspace/AGENTS.md") {
+		t.Fatal("expected cp for AGENTS.md")
 	}
 	if !strings.Contains(script, "cp /config/telemetry.ts") {
 		t.Fatal("expected cp for telemetry plugin")

@@ -612,13 +612,12 @@ func buildInitContainer(image string, pullPolicy corev1.PullPolicy) corev1.Conta
 				`mkdir -p /data/workspace && ` +
 				`mkdir -p /data/.config/opencode/.opencode/plugins && ` +
 				`mkdir -p /data/workspace/.opencode/tools /data/workspace/.opencode/skills || true; ` +
-				// Symlink opencode.json and AGENTS.md instead of copying them.
-				// Kubernetes auto-updates ConfigMap volume mounts (~60s), and since
-				// these are symlinks, the running process sees updated content without
-				// a pod restart. This enables hot-reload of permission rules and
-				// system prompt changes when Capability CRDs are modified.
-				`ln -sf /config/opencode.json /data/.config/opencode/opencode.json && ` +
-				`ln -sf /config/AGENTS.md /data/workspace/AGENTS.md && ` +
+				// Copy opencode.json and AGENTS.md from the ConfigMap volume into
+				// their expected locations. The /config volume is only mounted on
+				// this init container, so symlinks would be broken in the main
+				// container. Using cp ensures the files are available at runtime.
+				`cp /config/opencode.json /data/.config/opencode/opencode.json && ` +
+				`cp /config/AGENTS.md /data/workspace/AGENTS.md && ` +
 				`cp /config/telemetry.ts /data/.config/opencode/.opencode/plugins/telemetry.ts; ` +
 				`for f in /config/tool-*.ts; do [ -f "$f" ] && cp "$f" "/data/workspace/.opencode/tools/$(basename "$f" | sed 's/^tool-//')"; done; ` +
 				`for f in /config/plugin-*.ts; do [ -f "$f" ] && cp "$f" "/data/.config/opencode/.opencode/plugins/$(basename "$f" | sed 's/^plugin-//')"; done; ` +
