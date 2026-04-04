@@ -328,21 +328,20 @@ func (r *WorkflowRunReconciler) configurePiAgentSource(piAgent *agentsv1alpha1.P
 	source := piAgent.Spec.Source
 
 	if source.Inline != "" {
-		// Inline source: create a ConfigMap-style volume with the code as a projected item.
-		// The controller creates a ConfigMap with the inline code and mounts it.
-		// For simplicity, we use a downwardAPI-like approach: mount inline as an env var
-		// and have the runner read from AGENT_MODULE_PATH.
-		//
-		// Better approach: mount inline code via a ConfigMap volume.
-		// The PiAgent controller already validates the source, so we know it's set.
-		// We'll use a ConfigMap that the workflowrun controller creates alongside the Job.
-		//
-		// For now, pass inline code as an env var and let the runner write it to disk.
+		// Inline source: pass inline code as an env var and let the runner write it to disk.
 		// The runner handles AGENT_INLINE_CODE env var → writes to /agent/index.js
+		// The agent-code volume must be writable for this to work.
 		podSpec.Containers[0].Env = append(podSpec.Containers[0].Env, corev1.EnvVar{
 			Name:  "AGENT_INLINE_CODE",
 			Value: source.Inline,
 		})
+		// Make agent-code volume writable for inline sources (runner writes to /agent/index.js)
+		for i := range podSpec.Containers[0].VolumeMounts {
+			if podSpec.Containers[0].VolumeMounts[i].Name == "agent-code" {
+				podSpec.Containers[0].VolumeMounts[i].ReadOnly = false
+				break
+			}
+		}
 		return
 	}
 
