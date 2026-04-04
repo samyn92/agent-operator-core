@@ -15,9 +15,9 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentTool, AgentEvent, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { KnownProvider } from "@mariozechner/pi-ai";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 // =============================================================================
 // ENVIRONMENT
@@ -142,6 +142,57 @@ async function loadAgentModule(modulePath: string): Promise<AgentModule> {
 }
 
 // =============================================================================
+// TOOL REF LOADING
+// =============================================================================
+
+/**
+ * Scan /tools/<name>/index.js for tool packages pulled by init containers.
+ * Each directory should contain an index.js that exports a `tools` array of AgentTool[].
+ * Returns the merged array of all discovered tools.
+ */
+async function loadToolRefs(toolsDir: string = "/tools"): Promise<AgentTool[]> {
+  const allTools: AgentTool[] = [];
+
+  if (!existsSync(toolsDir)) {
+    log("No /tools directory found — no toolRefs configured");
+    return allTools;
+  }
+
+  let entries;
+  try {
+    entries = await readdir(toolsDir, { withFileTypes: true });
+  } catch (err) {
+    log(`Warning: failed to read tools directory: ${err instanceof Error ? err.message : String(err)}`);
+    return allTools;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const indexPath = join(toolsDir, entry.name, "index.js");
+    if (!existsSync(indexPath)) {
+      log(`Warning: tool package "${entry.name}" has no index.js — skipping`);
+      continue;
+    }
+
+    try {
+      const mod = await import(indexPath);
+      const tools = mod.tools ?? mod.default?.tools;
+      if (Array.isArray(tools) && tools.length > 0) {
+        allTools.push(...tools);
+        log(`Loaded ${tools.length} tools from toolRef "${entry.name}"`);
+      } else {
+        log(`Warning: tool package "${entry.name}" exports no tools array`);
+      }
+    } catch (err) {
+      log(`Warning: failed to load tools from "${entry.name}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return allTools;
+}
+
+// =============================================================================
 // RESULT COLLECTION
 // =============================================================================
 
@@ -183,7 +234,12 @@ async function main(): Promise<void> {
   // 2. Load agent module
   const agentModule = await loadAgentModule(config.agentModulePath);
 
-  // 3. Configure the model
+  // 3. Load tool refs (OCI tool packages pulled by init containers into /tools/<name>/)
+  const toolRefTools = await loadToolRefs();
+  const allTools = [...(agentModule.tools ?? []), ...toolRefTools];
+  log(`Total tools: ${allTools.length} (${agentModule.tools?.length ?? 0} from agent, ${toolRefTools.length} from toolRefs)`);
+
+  // 4. Configure the model
   // Set the API key in the environment where the provider expects it.
   // pi-ai's getModel/streamSimple reads standard env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
   const envKeyMap: Record<string, string> = {
@@ -215,7 +271,7 @@ async function main(): Promise<void> {
     config.modelName,
   );
 
-  // 4. Build system prompt
+  // 5. Build system prompt
   let systemPrompt = agentModule.config?.systemPrompt ?? "";
 
   // Inject trigger data into the system prompt context
@@ -223,7 +279,7 @@ async function main(): Promise<void> {
     systemPrompt += `\n\nTrigger data (context from the workflow trigger):\n${config.triggerData}`;
   }
 
-  // 5. Create and configure the agent
+  // 6. Create and configure the agent
   // Agent uses initialState for model/tools/systemPrompt/thinkingLevel,
   // and streamFn for the LLM streaming backend.
   const thinkingLevel: ThinkingLevel = config.thinkingLevel === "off"
@@ -233,7 +289,7 @@ async function main(): Promise<void> {
   const agent = new Agent({
     initialState: {
       model,
-      tools: agentModule.tools ?? [],
+      tools: allTools,
       systemPrompt,
       thinkingLevel,
     },
@@ -246,7 +302,7 @@ async function main(): Promise<void> {
     toolExecution: config.toolExecution,
   });
 
-  // 6. Subscribe to events and stream as JSONL
+  // 7. Subscribe to events and stream as JSONL
   const result: RunResult = {
     success: false,
     messages: [],
@@ -297,7 +353,7 @@ async function main(): Promise<void> {
     }
   });
 
-  // 7. Run the agent
+  // 8. Run the agent
   log(`Executing prompt (${config.prompt.length} chars)`);
 
   try {
@@ -314,10 +370,10 @@ async function main(): Promise<void> {
     log(`Agent execution failed: ${errorMessage}`);
   }
 
-  // 8. Write result file
+  // 9. Write result file
   await writeResult(config.outputDir, result);
 
-  // 9. Exit
+  // 10. Exit
   if (!result.success) {
     process.exit(1);
   }

@@ -249,6 +249,7 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "agent-code", MountPath: "/agent", ReadOnly: true},
 				{Name: "output", MountPath: "/output"},
+				{Name: "tools", MountPath: "/tools", ReadOnly: true},
 			},
 		}},
 		Volumes: []corev1.Volume{
@@ -260,6 +261,12 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 			},
 			{
 				Name: "output",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			{
+				Name: "tools",
 				VolumeSource: corev1.VolumeSource{
 					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
@@ -279,6 +286,9 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 
 	// Handle agent source: inline, ConfigMap, or OCI
 	r.configurePiAgentSource(piAgent, &podSpec)
+
+	// Handle tool refs: add init containers for each toolRef OCI artifact
+	r.configureToolRefs(piAgent, &podSpec)
 
 	ttl := piAgentJobTTL
 	backoff := piAgentBackoffLimit
@@ -382,6 +392,86 @@ func (r *WorkflowRunReconciler) configurePiAgentSource(piAgent *agentsv1alpha1.P
 		}
 		return
 	}
+}
+
+// configureToolRefs adds init containers for each toolRef OCI artifact.
+// Each toolRef is extracted into /tools/<name>/ where <name> is derived from
+// the last path segment of the OCI reference (before the tag/digest).
+// The pi-runner scans /tools/*/index.js at startup and merges all tool arrays.
+func (r *WorkflowRunReconciler) configureToolRefs(piAgent *agentsv1alpha1.PiAgent, podSpec *corev1.PodSpec) {
+	if len(piAgent.Spec.ToolRefs) == 0 {
+		return
+	}
+
+	// The tools volume needs to be writable by init containers
+	// Update the main container's mount to ReadOnly (init containers write, runner reads)
+	for i, vm := range podSpec.Containers[0].VolumeMounts {
+		if vm.Name == "tools" {
+			podSpec.Containers[0].VolumeMounts[i].ReadOnly = true
+			break
+		}
+	}
+
+	for i, toolRef := range piAgent.Spec.ToolRefs {
+		toolName := extractToolName(toolRef.Ref)
+		toolDir := fmt.Sprintf("/tools/%s", toolName)
+
+		initContainer := corev1.Container{
+			Name:  fmt.Sprintf("tool-%d-%s", i, toolName),
+			Image: "gcr.io/go-containerregistry/crane:latest",
+			Command: []string{
+				"sh", "-c",
+				fmt.Sprintf("mkdir -p %s && crane export %s - | tar -xf - -C %s", toolDir, toolRef.Ref, toolDir),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "tools", MountPath: "/tools"},
+			},
+		}
+
+		podSpec.InitContainers = append(podSpec.InitContainers, initContainer)
+	}
+}
+
+// extractToolName extracts the tool name from an OCI reference.
+// It uses the last path segment before the tag/digest as the name.
+// Examples:
+//
+//	"ghcr.io/samyn92/agent-tools/git:0.1.0"    → "git"
+//	"ghcr.io/samyn92/agent-tools/file:0.1.0"   → "file"
+//	"ghcr.io/org/tools/gitlab@sha256:abc..."    → "gitlab"
+//	"registry.io/tool:latest"                    → "tool"
+func extractToolName(ref string) string {
+	// Remove tag (:...) or digest (@sha256:...)
+	name := ref
+	if idx := strings.LastIndex(name, "@"); idx != -1 {
+		name = name[:idx]
+	}
+	if idx := strings.LastIndex(name, ":"); idx != -1 {
+		// Make sure this isn't the port separator (e.g., "registry:5000/foo")
+		// by checking if there's a "/" after it
+		afterColon := name[idx+1:]
+		if !strings.Contains(afterColon, "/") {
+			name = name[:idx]
+		}
+	}
+
+	// Get the last path segment
+	if idx := strings.LastIndex(name, "/"); idx != -1 {
+		name = name[idx+1:]
+	}
+
+	// Sanitize for Kubernetes naming (lowercase, alphanumeric + hyphens)
+	name = strings.ToLower(name)
+	var sanitized []byte
+	for _, c := range []byte(name) {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			sanitized = append(sanitized, c)
+		}
+	}
+	if len(sanitized) == 0 {
+		return "tool"
+	}
+	return string(sanitized)
 }
 
 // =============================================================================

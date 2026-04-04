@@ -1557,6 +1557,13 @@ func (in *PiAgentSpec) DeepCopyInto(out *PiAgentSpec) {
 		**out = **in
 	}
 	in.Source.DeepCopyInto(&out.Source)
+	if in.ToolRefs != nil {
+		in, out := &in.ToolRefs, &out.ToolRefs
+		*out = make([]OCIArtifactRef, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(v1.ResourceRequirements)

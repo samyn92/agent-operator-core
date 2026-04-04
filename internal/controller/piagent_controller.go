@@ -76,6 +76,16 @@ func (r *PiAgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	// Validate toolRefs: OCI refs must be non-empty, signature verification if configured
+	if err := r.validateToolRefs(ctx, piAgent); err != nil {
+		logger.Error(err, "ToolRef validation failed")
+		if statusErr := r.setStatus(ctx, piAgent, agentsv1alpha1.PiAgentPhaseFailed, "ToolRefInvalid", err.Error()); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// All validations passed — set Ready
 	if err := r.setStatus(ctx, piAgent, agentsv1alpha1.PiAgentPhaseReady, "Validated", "Source resolved, provider secrets verified"); err != nil {
 		logger.Error(err, "Failed to update status to Ready")
@@ -188,6 +198,21 @@ func (r *PiAgentReconciler) validateModel(piAgent *agentsv1alpha1.PiAgent) error
 		}
 	}
 	return fmt.Errorf("model references provider %q which is not in the providers list", providerName)
+}
+
+// validateToolRefs ensures all toolRef OCI references are valid and optionally verifies signatures.
+func (r *PiAgentReconciler) validateToolRefs(ctx context.Context, piAgent *agentsv1alpha1.PiAgent) error {
+	for i, toolRef := range piAgent.Spec.ToolRefs {
+		if toolRef.Ref == "" {
+			return fmt.Errorf("toolRefs[%d].ref must not be empty", i)
+		}
+		if toolRef.Verify != nil {
+			if err := r.verifyOCIArtifact(ctx, piAgent.Namespace, &piAgent.Spec.ToolRefs[i]); err != nil {
+				return fmt.Errorf("toolRefs[%d] (%s) signature verification failed: %w", i, toolRef.Ref, err)
+			}
+		}
+	}
+	return nil
 }
 
 // verifyOCIArtifact performs Cosign signature verification if configured.

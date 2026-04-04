@@ -66,6 +66,25 @@ type PiAgentSpec struct {
 	ToolExecution string `json:"toolExecution,omitempty"`
 
 	// ==========================================================================
+	// MODULAR TOOL PACKAGES
+	// ==========================================================================
+
+	// ToolRefs is a list of OCI artifacts containing reusable tool packages.
+	// Each toolRef is pulled at Job runtime via an init container and extracted
+	// into /tools/<name>/. The pi-runner scans /tools/*/index.js and merges
+	// all exported AgentTool[] arrays with the agent's own tools.
+	//
+	// This enables a modular, composable tool ecosystem where agents declare
+	// capabilities declaratively and tool packages are independently versioned.
+	//
+	// Example:
+	//   toolRefs:
+	//     - ref: ghcr.io/samyn92/agent-tools/git:0.1.0
+	//     - ref: ghcr.io/samyn92/agent-tools/file:0.1.0
+	// +optional
+	ToolRefs []OCIArtifactRef `json:"toolRefs,omitempty"`
+
+	// ==========================================================================
 	// INFRASTRUCTURE
 	// ==========================================================================
 
