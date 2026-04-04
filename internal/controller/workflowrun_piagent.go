@@ -251,6 +251,7 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 				{Name: "agent-code", MountPath: "/agent", ReadOnly: true},
 				{Name: "output", MountPath: "/output"},
 				{Name: "tools", MountPath: "/tools", ReadOnly: true},
+				{Name: "workspace", MountPath: "/workspace"},
 			},
 		}},
 		Volumes: []corev1.Volume{
@@ -268,6 +269,12 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 			},
 			{
 				Name: "tools",
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			{
+				Name: "workspace",
 				VolumeSource: corev1.VolumeSource{
 					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
@@ -514,6 +521,7 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 		{Name: "THINKING_LEVEL", Value: piAgent.Spec.ThinkingLevel},
 		{Name: "TOOL_EXECUTION", Value: piAgent.Spec.ToolExecution},
 		{Name: "PROMPT", Value: prompt},
+		{Name: "WORKSPACE", Value: "/workspace"},
 	}
 
 	// Add trigger data if present

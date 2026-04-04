@@ -56,8 +56,8 @@ RUN npm install --omit=dev && npm cache clean --force
 # Copy compiled JavaScript from builder
 COPY --from=builder /build/dist/ ./dist/
 
-# Create mount points for agent code and output
-RUN mkdir -p /agent /output && chown -R node:node /agent /output
+# Create mount points for agent code, output, and workspace
+RUN mkdir -p /agent /output /workspace && chown -R node:node /agent /output /workspace
 
 USER 1000:1000
 
