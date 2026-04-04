@@ -75,6 +75,13 @@ jobs:
           file: cmd/capability-gateway/Dockerfile
           push: false
 
+      - name: Build pi-runner image
+        uses: docker/build-push-action@v6
+        with:
+          context: images/pi-runner
+          file: images/pi-runner/Dockerfile
+          push: false
+
       - name: Build tool-bridge image
         uses: docker/build-push-action@v6
         with:

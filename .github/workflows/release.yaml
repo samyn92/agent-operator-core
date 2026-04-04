@@ -31,6 +31,10 @@ jobs:
             context: images/opencode
             file: images/opencode/Dockerfile
             build-args: "OPENCODE_VERSION=v1.3.13"
+          - name: pi-runner
+            context: images/pi-runner
+            file: images/pi-runner/Dockerfile
+            build-args: ""
           - name: tool-bridge
             context: images/tool-bridge
             file: images/tool-bridge/Dockerfile
