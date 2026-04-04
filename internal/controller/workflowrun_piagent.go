@@ -537,6 +537,12 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 		})
 	}
 
+	// Append user-defined env vars from PiAgent.spec.env.
+	// These come after the standard vars so they can override defaults if needed.
+	if len(piAgent.Spec.Env) > 0 {
+		env = append(env, piAgent.Spec.Env...)
+	}
+
 	return env, nil
 }
 

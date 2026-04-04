@@ -553,57 +553,59 @@ Fully implemented in `internal/controller/workflowrun_controller.go` (~450 lines
 
 ---
 
-## Phase 5d: Worker Agent — Issue-to-MR
+## Phase 5d: Worker Agent — Issue-to-MR -- COMPLETE
 
 ### 5d.1 Concept
 
 A "Worker Agent" acts on issues: clones a repo, creates a branch, implements changes, commits, pushes, and creates a Merge Request. With the modular OCI tool architecture, the agent source is tiny (just system prompt + business logic) and capabilities come from `toolRefs`.
 
-### 5d.2 Example Worker Agent
+### 5d.2 PiAgentSpec.Env — Extra Environment Variables
 
-PiAgent definition:
-```yaml
-apiVersion: agents.io/v1alpha1
-kind: PiAgent
-metadata:
-  name: issue-worker
-spec:
-  model: anthropic/claude-sonnet-4-20250514
-  providers:
-    - name: anthropic
-      apiKeySecret: { name: anthropic-key, key: api-key }
-  source:
-    oci:
-      ref: ghcr.io/samyn92/agents/issue-worker:0.1.0
-  toolRefs:
-    - ref: ghcr.io/samyn92/agent-tools/git:0.1.0
-    - ref: ghcr.io/samyn92/agent-tools/file:0.1.0
-    - ref: ghcr.io/samyn92/agent-tools/gitlab:0.1.0
-  serviceAccountName: agent-worker  # Needs git push access
-  thinkingLevel: medium
-  timeout: 10m
+Added `env []corev1.EnvVar` field to PiAgentSpec to pass tool-specific configuration (API tokens, URLs, git identity) to the Job pod. Uses standard Kubernetes EnvVar with both literal values and secretKeyRef support.
+
+```go
+type PiAgentSpec struct {
+    // ...existing fields...
+
+    // Env defines additional environment variables for the Job pod.
+    Env []corev1.EnvVar `json:"env,omitempty"`
+}
 ```
 
-Agent source (minimal — tools come from toolRefs):
-```typescript
-export const config = {
-    systemPrompt: `You are a software engineering agent. Given an issue description:
-1. Clone the repository
-2. Create a feature branch named after the issue
-3. Implement the requested changes
-4. Write or update tests as needed
-5. Commit with a descriptive message
-6. Push the branch
-7. Create a Merge Request linking back to the issue
+Wired into `buildPiAgentEnv()` — user-defined env vars are appended after standard runner vars (MODEL_PROVIDER, PROMPT, etc.) so they can override defaults if needed.
 
-Follow the project's coding conventions. Keep changes minimal and focused.`
-};
+### 5d.3 New Tool Packages
 
-// No tools array needed — all tools come from toolRefs
-export const tools = [];
-```
+**file-tools** (`tools/file/index.js`) — 6 tools:
+- `read_file` — Read file contents with offset/limit support
+- `write_file` — Write/create files with auto-mkdir
+- `edit_file` — Find-and-replace edits (surgical, without full rewrite)
+- `list_files` — Directory listing with recursive + depth control
+- `search_files` — grep-based content search with regex
+- `create_directory` — mkdir -p
 
-### 5d.3 Multi-Step Workflow: Issue Worker + Reviewer
+Path traversal prevention: all paths resolved within WORKSPACE with `safePath()`.
+
+**gitlab-tools** (`tools/gitlab/index.js`) — 9 tools:
+- `gitlab_create_mr` — Create merge requests
+- `gitlab_get_mr` — Get MR details + optional file changes
+- `gitlab_get_mr_diff` — Full unified diff of an MR
+- `gitlab_add_mr_note` — Add comments to MRs
+- `gitlab_list_mrs` — List MRs filtered by state
+- `gitlab_list_issues` — List issues filtered by state/labels
+- `gitlab_get_issue` — Get full issue details
+- `gitlab_add_issue_note` — Add comments to issues
+- `gitlab_get_pipeline` — Get latest pipeline status
+
+Uses GitLab REST API v4 via Node.js built-in `fetch`. No external dependencies. Auth via `GITLAB_TOKEN` env var.
+
+### 5d.4 Issue Worker Agent Source
+
+Minimal agent source (`agents/issue-worker/index.js`) — no tools defined, all capabilities come from toolRefs. Exports only:
+- `config.systemPrompt` — Detailed workflow instructions for issue implementation
+- `tools = []` — Empty array, tools provided by git/file/gitlab toolRefs
+
+### 5d.5 Multi-Step Workflow: Issue Worker + Reviewer
 
 ```yaml
 apiVersion: agents.io/v1alpha1
@@ -613,28 +615,24 @@ metadata:
 spec:
   trigger:
     gitlab:
-      events: [issue]
-      actions: [opened]
-      labels: [agent-task]  # Only issues tagged for agent work
+      events: [Issue Hook]
+      actions: [open]
+      labels: [agent-task]
   steps:
     - name: implement
       piAgent: issue-worker
-      prompt: |
-        Implement the following issue:
-        {{.trigger}}
-      timeout: 10m
+      prompt: "Implement the following GitLab issue..."
+      timeout: "10m"
     - name: review
       piAgent: pr-reviewer
-      prompt: |
-        Review the MR created in the previous step:
-        {{.steps.implement.output}}
-      timeout: 5m
+      prompt: "Review the MR created in the previous step..."
+      timeout: "5m"
   output:
     gitlab:
-      note: true  # Post review result back to the issue
+      note: true
 ```
 
-### 5d.4 Human Approval via MR Process
+### 5d.6 Human Approval via MR Process
 
 No need to build approval gates — the MR review process IS the approval mechanism:
 1. Worker agent creates MR
@@ -643,11 +641,17 @@ No need to build approval gates — the MR review process IS the approval mechan
 4. Human merges or requests changes
 5. If changes requested, a new WorkflowRun can be triggered
 
-### 5d.5 Deliverables
-- [ ] Create `issue-worker` agent source package
-- [ ] Create `pr-reviewer` agent source package (upgrade from current inline version)
-- [ ] Create `issue-to-mr` Workflow definition
-- [ ] Add to Flux deployment files
+### 5d.7 Deliverables -- DONE
+- [x] Add `Env []corev1.EnvVar` to `PiAgentSpec` in `api/v1alpha1/piagent_types.go`
+- [x] Wire into `buildPiAgentEnv()` in `internal/controller/workflowrun_piagent.go`
+- [x] Regenerate deep copy and CRD YAML
+- [x] Create `file-tools` package (6 tools) — `agent-tools/tools/file/index.js`
+- [x] Create `gitlab-tools` package (9 tools) — `agent-tools/tools/gitlab/index.js`
+- [x] Create `issue-worker` agent source — `agent-tools/agents/issue-worker/index.js`
+- [x] Create `issue-to-mr` Workflow definition — Flux deployment
+- [x] Create `issue-worker` PiAgent definition — Flux deployment with env vars + toolRefs
+- [x] Update release workflow to auto-publish agent source packages
+- [x] Update Flux kustomization.yaml
 - [ ] Test end-to-end: issue creation → branch → MR → review comment
 
 ---
@@ -873,19 +877,19 @@ export const tools: AgentTool[] = [
 
 ## Implementation Order (Updated)
 
-**Phases 1-5, 5b, 5c are COMPLETE.** The remaining work:
+**Phases 1-5, 5b, 5c, 5d are COMPLETE.** The remaining work:
 
 | # | Phase | Effort | Dependencies | Impact |
 |---|-------|--------|-------------|--------|
 | ~~5c~~ | ~~Output Posting~~ | ~~DONE~~ | ~~None~~ | ~~Already built with Phase 4~~ |
 | ~~5b~~ | ~~Modular OCI Tool Packages~~ | ~~DONE~~ | ~~None~~ | ~~Enables modular tools~~ |
-| 5d | Issue Worker PiAgent | 2-3 days | 5b, 5c | End-to-end issue-to-MR |
+| ~~5d~~ | ~~Issue Worker PiAgent~~ | ~~DONE~~ | ~~5b, 5c~~ | ~~End-to-end issue-to-MR~~ |
 | 6 | Console UI — Process View | 2 weeks | Phase 4 | The UX differentiator |
 | 7 | Console Backend — Event Bridge | 3 days | Phase 4 | Enables live UI |
 | 8 | Helm Chart Integration | 2 days | 5b, 5d | Deployment story |
 | 9 | Future Enhancements | Ongoing | All | Parallel groups, CEL, approvals |
 
-**Next immediate action: Phase 5d (Issue Worker PiAgent).**
+**Next immediate action: Phase 6 (Console UI) or Phase 7 (Console Backend).**
 
 ---
 
@@ -893,13 +897,15 @@ export const tools: AgentTool[] = [
 
 | Tag | Repo | Date | Highlights |
 |-----|------|------|-----------|
+| v0.0.19 | agent-operator-core | — | PiAgentSpec.Env field for tool-specific env vars |
+| v0.0.18 | agent-operator-core | — | Fix crash: piagents RBAC + cluster-scoped toggle |
 | v0.0.17 | agent-operator-core | — | Modular OCI toolRefs: CRD field, controller validation, Job init containers, runner loading |
 | v0.0.16 | agent-operator-core | — | PiAgent CRD, Pi runner, Workflow dual-runtime, WorkflowRun Pi execution |
+| v0.0.6 | agent-tools | — | file-tools (6), gitlab-tools (9), issue-worker agent, agent package publishing |
+| v0.0.5 | agent-tools | — | Automated release: CLI binaries on GH release + tool OCI artifacts to ghcr.io |
 | v0.0.4 | agent-tools | — | `push tool` OCI command, git tool package (11 tools) |
 | v0.0.3 | agent-tools | — | `push piagent` OCI command, 4 CLI binaries, 7 tool images |
 | v0.0.13 | agent-console | — | Tab bar redesign, workflow placeholder |
-
-Note: Two additional commits after v0.0.16 (CI YAML fix + CRD regeneration for controller-gen v0.20.1) are on main but not tagged — non-functional changes.
 
 ---
 
@@ -908,15 +914,15 @@ Note: Two additional commits after v0.0.16 (CI YAML fix + CRD regeneration for c
 ### agent-operator-core (this repo)
 
 **Completed:**
-- `api/v1alpha1/piagent_types.go` — PiAgent CRD types with `ToolRefs []OCIArtifactRef` (193 lines)
+- `api/v1alpha1/piagent_types.go` — PiAgent CRD types with `ToolRefs []OCIArtifactRef` + `Env []corev1.EnvVar`
 - `api/v1alpha1/workflow_types.go` — Added `PiAgent` fields to WorkflowStep/WorkflowSpec, Pi fields to StepResult
-- `api/v1alpha1/zz_generated.deepcopy.go` — Regenerated (handles ToolRefs slice)
+- `api/v1alpha1/zz_generated.deepcopy.go` — Regenerated (handles ToolRefs slice + Env slice)
 - `internal/controller/piagent_controller.go` — Validation controller + `validateToolRefs()` (302 lines)
-- `internal/controller/workflowrun_piagent.go` — Pi execution + `configureToolRefs()` + `extractToolName()` (~745 lines)
+- `internal/controller/workflowrun_piagent.go` — Pi execution + `configureToolRefs()` + `extractToolName()` + user env vars (~750 lines)
 - `internal/controller/workflowrun_controller.go` — PiAgent step routing + full output posting
 - `internal/controller/workflow_controller.go` — PiAgent ref validation
 - `cmd/operator/main.go` — PiAgent controller registration
-- `config/crd/bases/agents.io_piagents.yaml` — Generated (includes toolRefs)
+- `config/crd/bases/agents.io_piagents.yaml` — Generated (includes toolRefs + env)
 - `config/crd/bases/agents.io_workflows.yaml` — Updated
 - `config/crd/bases/agents.io_workflowruns.yaml` — Updated
 - `config/rbac/role.yaml` — batch/jobs, pods, pods/log, piagents
@@ -931,10 +937,10 @@ Note: Two additional commits after v0.0.16 (CI YAML fix + CRD regeneration for c
 - `pkg/piagent/pusher.go`, `pkg/piagent/helpers.go` — PiAgent OCI pusher
 - `pkg/toolpush/pusher.go` — Tool OCI pusher (application/vnd.agents.io.tool.v1)
 - `tools/git/index.js` — Git tool package (11 tools, pure JS, no dependencies)
-
-**Remaining:**
-- `tools/file/index.js` — File tool package (future)
-- `tools/gitlab/index.js` — GitLab tool package (future)
+- `tools/file/index.js` — File tool package (6 tools: read, write, edit, list, search, mkdir)
+- `tools/gitlab/index.js` — GitLab tool package (9 tools: MR CRUD, issue CRUD, pipeline status)
+- `agents/issue-worker/index.js` — Issue worker agent source (system prompt only, tools via toolRefs)
+- `.github/workflows/release.yaml` — Auto-publishes tool packages + agent packages + CLI binaries
 
 ### agent-console
 **Completed:**
@@ -952,5 +958,7 @@ Note: Two additional commits after v0.0.16 (CI YAML fix + CRD regeneration for c
 ### Flux deployment (`/home/samy/dev/gitlab.com/homecluster/flux/apps/agent-platform/`)
 **Created but NOT committed:**
 - `piagent-pr-reviewer.yaml` — Inline PiAgent for PR review
+- `piagent-issue-worker.yaml` — Issue worker PiAgent with toolRefs + env vars
 - `workflow-pr-review.yaml` — GitHub pull_request trigger workflow
-- `kustomization.yaml` — Updated with new entries
+- `workflow-issue-to-mr.yaml` — GitLab issue trigger → implement + review pipeline
+- `kustomization.yaml` — Updated with all new entries

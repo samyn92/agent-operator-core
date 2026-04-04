@@ -85,6 +85,26 @@ type PiAgentSpec struct {
 	ToolRefs []OCIArtifactRef `json:"toolRefs,omitempty"`
 
 	// ==========================================================================
+	// ENVIRONMENT
+	// ==========================================================================
+
+	// Env defines additional environment variables for the Job pod.
+	// These are merged with the runner's standard env vars (MODEL_PROVIDER, PROMPT, etc.).
+	// Use this for tool-specific configuration like API tokens, URLs, and git config.
+	//
+	// Supports both literal values and Kubernetes Secret references:
+	//   env:
+	//     - name: GITLAB_TOKEN
+	//       valueFrom:
+	//         secretKeyRef:
+	//           name: gitlab-token
+	//           key: token
+	//     - name: GITLAB_URL
+	//       value: "https://gitlab.example.com"
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// ==========================================================================
 	// INFRASTRUCTURE
 	// ==========================================================================
 
