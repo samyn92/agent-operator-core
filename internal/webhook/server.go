@@ -197,6 +197,14 @@ func (s *Server) matchGitHubTrigger(ctx context.Context, wf *agentsv1alpha1.Work
 		}
 	}
 
+	// Filter by labels
+	if len(trigger.Labels) > 0 {
+		payloadLabels := extractGitHubLabels(payload)
+		if !hasAllLabels(payloadLabels, trigger.Labels) {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -220,8 +228,10 @@ func (s *Server) matchGitLabTrigger(ctx context.Context, wf *agentsv1alpha1.Work
 	// Normalize GitLab event names (they come as "Push Hook", "Merge Request Hook", etc.)
 	normalizedEvent := normalizeGitLabEvent(event)
 
-	// Check event type
-	if !contains(trigger.Events, normalizedEvent) {
+	// Check event type — normalize both sides so users can write "Issue Hook" or "issue"
+	if !containsNormalized(trigger.Events, normalizedEvent) {
+		log.FromContext(ctx).Info("GitLab event not matched", "workflow", wf.Name,
+			"incomingEvent", event, "normalizedEvent", normalizedEvent, "triggerEvents", trigger.Events)
 		return false
 	}
 
@@ -258,6 +268,16 @@ func (s *Server) matchGitLabTrigger(ctx context.Context, wf *agentsv1alpha1.Work
 	if len(trigger.Actions) > 0 {
 		action := getNestedString(payload, "object_attributes", "action")
 		if action != "" && !contains(trigger.Actions, action) {
+			return false
+		}
+	}
+
+	// Filter by labels
+	if len(trigger.Labels) > 0 {
+		payloadLabels := extractGitLabLabels(payload)
+		if !hasAllLabels(payloadLabels, trigger.Labels) {
+			log.FromContext(ctx).Info("GitLab labels not matched", "workflow", wf.Name,
+				"payloadLabels", payloadLabels, "requiredLabels", trigger.Labels)
 			return false
 		}
 	}
@@ -347,6 +367,93 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// containsNormalized checks if any item in the slice, when normalized as a GitLab event,
+// matches the already-normalized item. This allows users to write "Issue Hook" or "issue"
+// in their Workflow specs.
+func containsNormalized(slice []string, normalizedItem string) bool {
+	for _, s := range slice {
+		if normalizeGitLabEvent(s) == normalizedItem {
+			return true
+		}
+	}
+	return false
+}
+
+// extractGitLabLabels extracts label titles from a GitLab webhook payload.
+// GitLab issue/MR payloads include labels at object_attributes.labels[] or at the top-level labels[].
+func extractGitLabLabels(payload map[string]interface{}) []string {
+	var labels []string
+
+	// Try object_attributes.labels first (issue/MR events)
+	if objAttrs, ok := payload["object_attributes"].(map[string]interface{}); ok {
+		if lbls, ok := objAttrs["labels"].([]interface{}); ok {
+			for _, l := range lbls {
+				if lMap, ok := l.(map[string]interface{}); ok {
+					if title, ok := lMap["title"].(string); ok {
+						labels = append(labels, title)
+					}
+				}
+			}
+			if len(labels) > 0 {
+				return labels
+			}
+		}
+	}
+
+	// Fallback: top-level labels array
+	if lbls, ok := payload["labels"].([]interface{}); ok {
+		for _, l := range lbls {
+			if lMap, ok := l.(map[string]interface{}); ok {
+				if title, ok := lMap["title"].(string); ok {
+					labels = append(labels, title)
+				}
+			}
+		}
+	}
+
+	return labels
+}
+
+// hasAllLabels checks that all required labels are present in the payload labels
+func hasAllLabels(payloadLabels []string, requiredLabels []string) bool {
+	labelSet := make(map[string]bool, len(payloadLabels))
+	for _, l := range payloadLabels {
+		labelSet[l] = true
+	}
+	for _, required := range requiredLabels {
+		if !labelSet[required] {
+			return false
+		}
+	}
+	return true
+}
+
+// extractGitHubLabels extracts label names from a GitHub webhook payload.
+// GitHub issue/PR payloads include labels at issue.labels[] or pull_request.labels[].
+func extractGitHubLabels(payload map[string]interface{}) []string {
+	var labels []string
+
+	// Try issue.labels, then pull_request.labels
+	for _, key := range []string{"issue", "pull_request"} {
+		if obj, ok := payload[key].(map[string]interface{}); ok {
+			if lbls, ok := obj["labels"].([]interface{}); ok {
+				for _, l := range lbls {
+					if lMap, ok := l.(map[string]interface{}); ok {
+						if name, ok := lMap["name"].(string); ok {
+							labels = append(labels, name)
+						}
+					}
+				}
+				if len(labels) > 0 {
+					return labels
+				}
+			}
+		}
+	}
+
+	return labels
 }
 
 func matchesAnyPattern(s string, patterns []string) bool {
