@@ -198,6 +198,11 @@ type GitHubTrigger struct {
 	// +optional
 	Actions []string `json:"actions,omitempty"`
 
+	// Labels filters to issues/PRs with specific labels
+	// Only triggers when the event's issue/PR has ALL of these labels
+	// +optional
+	Labels []string `json:"labels,omitempty"`
+
 	// Secret references the GitHub webhook secret for HMAC validation
 	// +optional
 	Secret *SecretKeySelector `json:"secret,omitempty"`
@@ -225,6 +230,11 @@ type GitLabTrigger struct {
 	// Examples for merge_request: open, close, merge, update
 	// +optional
 	Actions []string `json:"actions,omitempty"`
+
+	// Labels filters to issues/MRs with specific labels
+	// Only triggers when the event's issue/MR has ALL of these labels
+	// +optional
+	Labels []string `json:"labels,omitempty"`
 
 	// Secret references the GitLab webhook token for validation
 	// +optional
