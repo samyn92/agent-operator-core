@@ -2,6 +2,7 @@ package resources
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -258,11 +259,19 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		envVars = append(envVars, corev1.EnvVar{Name: "AUDIT_ENABLED", Value: "true"})
 	}
 
-	// Add explicit environment variables from the MCP spec
-	for k, v := range mcp.Environment {
+	// Add explicit environment variables from the MCP spec.
+	// Sort keys for deterministic ordering — without this, Go's random map iteration
+	// order causes the env var list to differ on each reconcile, triggering spurious
+	// Deployment updates and pod rollouts.
+	envKeys := make([]string, 0, len(mcp.Environment))
+	for k := range mcp.Environment {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
 		envVars = append(envVars, corev1.EnvVar{
 			Name:  k,
-			Value: v,
+			Value: mcp.Environment[k],
 		})
 	}
 
