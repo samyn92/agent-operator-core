@@ -219,12 +219,68 @@ async function writeResult(outputDir: string, result: RunResult): Promise<void> 
 }
 
 // =============================================================================
+// GIT AUTH
+// =============================================================================
+
+/**
+ * Configure git HTTPS authentication using GIT_ASKPASS.
+ *
+ * Mirrors the ConfigureGitAuth() logic from capability-gateway (gateway.go).
+ * Checks for GITLAB_TOKEN, GH_TOKEN, or GITHUB_TOKEN env vars and creates
+ * a shell script that echoes the appropriate token when git asks for a password.
+ */
+async function configureGitAuth(): Promise<void> {
+  const glToken = process.env["GITLAB_TOKEN"];
+  const ghToken = process.env["GH_TOKEN"] || process.env["GITHUB_TOKEN"];
+
+  if (!glToken && !ghToken) {
+    log("No git tokens found (GITLAB_TOKEN, GH_TOKEN, GITHUB_TOKEN) — git auth not configured");
+    return;
+  }
+
+  // Build an askpass script that returns the right token based on the host
+  const lines = ["#!/bin/sh"];
+  if (glToken) {
+    lines.push(`echo "${glToken}"`);
+  } else if (ghToken) {
+    lines.push(`echo "${ghToken}"`);
+  }
+
+  const askpassPath = "/tmp/git-askpass.sh";
+  await writeFile(askpassPath, lines.join("\n") + "\n", { mode: 0o755 });
+
+  process.env["GIT_ASKPASS"] = askpassPath;
+  process.env["GIT_TERMINAL_PROMPT"] = "0";
+
+  // Configure git to use the token as username for HTTPS clones
+  // This makes `git clone https://gitlab.com/...` work without user interaction
+  if (glToken) {
+    // For GitLab, configure the credential helper inline via git config env vars
+    // Also set the URL to include oauth2 prefix so git uses the token as password
+    const gitlabUrl = process.env["GITLAB_URL"] || "https://gitlab.com";
+    const host = new URL(gitlabUrl).host;
+    process.env["GIT_CONFIG_COUNT"] = "1";
+    process.env["GIT_CONFIG_KEY_0"] = `url.https://oauth2:${glToken}@${host}/.insteadOf`;
+    process.env["GIT_CONFIG_VALUE_0"] = `https://${host}/`;
+    log(`Git auth configured for GitLab (${host}) via URL rewrite + askpass`);
+  } else if (ghToken) {
+    process.env["GIT_CONFIG_COUNT"] = "1";
+    process.env["GIT_CONFIG_KEY_0"] = `url.https://x-access-token:${ghToken}@github.com/.insteadOf`;
+    process.env["GIT_CONFIG_VALUE_0"] = "https://github.com/";
+    log("Git auth configured for GitHub via URL rewrite + askpass");
+  }
+}
+
+// =============================================================================
 // MAIN
 // =============================================================================
 
 async function main(): Promise<void> {
   log("Starting pi-runner");
   emit("runner_start");
+
+  // 0. Configure git HTTPS auth (before anything that might use git)
+  await configureGitAuth();
 
   // 1. Load configuration
   const config = loadConfig();

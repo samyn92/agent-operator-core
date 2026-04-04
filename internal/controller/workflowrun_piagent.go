@@ -516,6 +516,7 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 	}
 
 	env := []corev1.EnvVar{
+		{Name: "HOME", Value: "/workspace"},
 		{Name: "MODEL_PROVIDER", Value: providerName},
 		{Name: "MODEL_NAME", Value: modelName},
 		{Name: "THINKING_LEVEL", Value: piAgent.Spec.ThinkingLevel},
