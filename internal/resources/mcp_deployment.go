@@ -26,7 +26,9 @@ const (
 	DefaultToolBridgeImage = "ghcr.io/samyn92/tool-bridge:latest"
 
 	// DefaultCraneImage is the image used for init containers that pull OCI artifacts.
-	DefaultCraneImage = "gcr.io/go-containerregistry/crane:latest"
+	// The :debug tag includes a busybox shell (sh, tar, mkdir) required by the
+	// "sh -c 'crane export ... | tar -xf -'" init container commands.
+	DefaultCraneImage = "gcr.io/go-containerregistry/crane:debug"
 )
 
 // MCPServerDeploymentName returns the Deployment name for an MCP server capability.

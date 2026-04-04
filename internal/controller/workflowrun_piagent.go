@@ -372,7 +372,7 @@ func (r *WorkflowRunReconciler) configurePiAgentSource(piAgent *agentsv1alpha1.P
 		// Uses crane (or a lightweight OCI puller) to extract the artifact.
 		initContainer := corev1.Container{
 			Name:  "oci-pull",
-			Image: "gcr.io/go-containerregistry/crane:latest",
+			Image: "gcr.io/go-containerregistry/crane:debug",
 			Command: []string{
 				"sh", "-c",
 				fmt.Sprintf(
@@ -423,7 +423,7 @@ func (r *WorkflowRunReconciler) configureToolRefs(piAgent *agentsv1alpha1.PiAgen
 
 		initContainer := corev1.Container{
 			Name:  fmt.Sprintf("tool-%d-%s", i, toolName),
-			Image: "gcr.io/go-containerregistry/crane:latest",
+			Image: "gcr.io/go-containerregistry/crane:debug",
 			Command: []string{
 				"sh", "-c",
 				fmt.Sprintf("mkdir -p %s && crane export %s - | tar -xf - -C %s", toolDir, toolRef.Ref, toolDir),
