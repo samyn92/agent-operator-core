@@ -74,3 +74,10 @@ jobs:
           context: .
           file: cmd/capability-gateway/Dockerfile
           push: false
+
+      - name: Build tool-bridge image
+        uses: docker/build-push-action@v6
+        with:
+          context: images/tool-bridge
+          file: images/tool-bridge/Dockerfile
+          push: false

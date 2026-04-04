@@ -31,6 +31,10 @@ jobs:
             context: images/opencode
             file: images/opencode/Dockerfile
             build-args: "OPENCODE_VERSION=v1.3.13"
+          - name: tool-bridge
+            context: images/tool-bridge
+            file: images/tool-bridge/Dockerfile
+            build-args: ""
           - name: agent-channel-telegram
             context: channels/telegram
             file: channels/telegram/Dockerfile
