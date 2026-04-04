@@ -338,3 +338,49 @@ func (c *Client) readLimited(r io.Reader, declaredSize int64) (string, error) {
 func isTarGzMediaType(mediaType string) bool {
 	return strings.Contains(mediaType, "tar+gzip") || strings.Contains(mediaType, "tar.gz")
 }
+
+// ExtractToolName extracts the tool name from an OCI reference.
+// It uses the last path segment before the tag/digest as the name.
+//
+// This is used by both PiAgent (workflowrun_piagent.go) and MCP tool-bridge
+// (mcp_deployment.go) to derive the extraction directory name for OCI tool packages.
+//
+// Examples:
+//
+//	"ghcr.io/samyn92/agent-tools/git:0.1.0"    → "git"
+//	"ghcr.io/samyn92/agent-tools/file:0.1.0"   → "file"
+//	"ghcr.io/org/tools/gitlab@sha256:abc..."    → "gitlab"
+//	"registry.io/tool:latest"                    → "tool"
+func ExtractToolName(ref string) string {
+	// Remove tag (:...) or digest (@sha256:...)
+	name := ref
+	if idx := strings.LastIndex(name, "@"); idx != -1 {
+		name = name[:idx]
+	}
+	if idx := strings.LastIndex(name, ":"); idx != -1 {
+		// Make sure this isn't the port separator (e.g., "registry:5000/foo")
+		// by checking if there's a "/" after it
+		afterColon := name[idx+1:]
+		if !strings.Contains(afterColon, "/") {
+			name = name[:idx]
+		}
+	}
+
+	// Get the last path segment
+	if idx := strings.LastIndex(name, "/"); idx != -1 {
+		name = name[idx+1:]
+	}
+
+	// Sanitize for Kubernetes naming (lowercase, alphanumeric + hyphens)
+	name = strings.ToLower(name)
+	var sanitized []byte
+	for _, c := range []byte(name) {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			sanitized = append(sanitized, c)
+		}
+	}
+	if len(sanitized) == 0 {
+		return "tool"
+	}
+	return string(sanitized)
+}

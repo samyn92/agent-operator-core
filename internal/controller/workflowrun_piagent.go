@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
+	"github.com/samyn92/agent-operator-core/pkg/oci"
 )
 
 // =============================================================================
@@ -412,8 +413,12 @@ func (r *WorkflowRunReconciler) configureToolRefs(piAgent *agentsv1alpha1.PiAgen
 		}
 	}
 
+	// Track which pull secrets we've already added as volumes to avoid duplicates
+	// (multiple toolRefs might reference the same pull secret).
+	pullSecretVolumes := make(map[string]bool)
+
 	for i, toolRef := range piAgent.Spec.ToolRefs {
-		toolName := extractToolName(toolRef.Ref)
+		toolName := oci.ExtractToolName(toolRef.Ref)
 		toolDir := fmt.Sprintf("/tools/%s", toolName)
 
 		initContainer := corev1.Container{
@@ -428,50 +433,48 @@ func (r *WorkflowRunReconciler) configureToolRefs(piAgent *agentsv1alpha1.PiAgen
 			},
 		}
 
+		// Add PullSecret support — mount the docker config secret and set
+		// DOCKER_CONFIG so crane authenticates to private registries.
+		// Same pattern as MCP capability crane init containers.
+		if toolRef.PullSecret != nil && toolRef.PullSecret.Name != "" {
+			secretName := toolRef.PullSecret.Name
+			volName := fmt.Sprintf("pull-secret-%s", secretName)
+
+			// Add the secret volume if we haven't already
+			if !pullSecretVolumes[secretName] {
+				podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+					Name: volName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: secretName,
+							Items: []corev1.KeyToPath{
+								{
+									Key:  ".dockerconfigjson",
+									Path: "config.json",
+								},
+							},
+							Optional: boolPtr(true),
+						},
+					},
+				})
+				pullSecretVolumes[secretName] = true
+			}
+
+			// Mount at a unique path per init container to avoid conflicts
+			dockerConfigPath := fmt.Sprintf("/docker-config/%s", secretName)
+			initContainer.VolumeMounts = append(initContainer.VolumeMounts, corev1.VolumeMount{
+				Name:      volName,
+				MountPath: dockerConfigPath,
+				ReadOnly:  true,
+			})
+			initContainer.Env = append(initContainer.Env, corev1.EnvVar{
+				Name:  "DOCKER_CONFIG",
+				Value: dockerConfigPath,
+			})
+		}
+
 		podSpec.InitContainers = append(podSpec.InitContainers, initContainer)
 	}
-}
-
-// extractToolName extracts the tool name from an OCI reference.
-// It uses the last path segment before the tag/digest as the name.
-// Examples:
-//
-//	"ghcr.io/samyn92/agent-tools/git:0.1.0"    → "git"
-//	"ghcr.io/samyn92/agent-tools/file:0.1.0"   → "file"
-//	"ghcr.io/org/tools/gitlab@sha256:abc..."    → "gitlab"
-//	"registry.io/tool:latest"                    → "tool"
-func extractToolName(ref string) string {
-	// Remove tag (:...) or digest (@sha256:...)
-	name := ref
-	if idx := strings.LastIndex(name, "@"); idx != -1 {
-		name = name[:idx]
-	}
-	if idx := strings.LastIndex(name, ":"); idx != -1 {
-		// Make sure this isn't the port separator (e.g., "registry:5000/foo")
-		// by checking if there's a "/" after it
-		afterColon := name[idx+1:]
-		if !strings.Contains(afterColon, "/") {
-			name = name[:idx]
-		}
-	}
-
-	// Get the last path segment
-	if idx := strings.LastIndex(name, "/"); idx != -1 {
-		name = name[idx+1:]
-	}
-
-	// Sanitize for Kubernetes naming (lowercase, alphanumeric + hyphens)
-	name = strings.ToLower(name)
-	var sanitized []byte
-	for _, c := range []byte(name) {
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
-			sanitized = append(sanitized, c)
-		}
-	}
-	if len(sanitized) == 0 {
-		return "tool"
-	}
-	return string(sanitized)
 }
 
 // =============================================================================

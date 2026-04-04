@@ -251,3 +251,34 @@ func TestReadLimited_DeclaredTooLarge(t *testing.T) {
 		t.Fatal("expected error for oversized declared size")
 	}
 }
+
+// =============================================================================
+// ExtractToolName Tests
+// =============================================================================
+
+func TestExtractToolName(t *testing.T) {
+	tests := []struct {
+		ref      string
+		expected string
+	}{
+		{"ghcr.io/samyn92/agent-tools/git:0.1.0", "git"},
+		{"ghcr.io/samyn92/agent-tools/file:0.1.0", "file"},
+		{"ghcr.io/org/tools/gitlab@sha256:abc123", "gitlab"},
+		{"registry.io/tool:latest", "tool"},
+		{"registry:5000/org/my-tool:v1", "my-tool"},
+		{"ghcr.io/samyn92/agent-tools/git", "git"},
+		{"registry:5000/foo/bar/baz:1.0", "baz"},
+		// Edge cases
+		{"ghcr.io/samyn92/agent-tools/MY-Tool:0.1.0", "my-tool"},
+		{"ghcr.io/samyn92/tools/some_thing:v1", "something"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := ExtractToolName(tt.ref)
+			if got != tt.expected {
+				t.Errorf("ExtractToolName(%q) = %q, want %q", tt.ref, got, tt.expected)
+			}
+		})
+	}
+}

@@ -349,7 +349,7 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 // resolveOCISkillContent pulls a Skill from an OCI artifact and returns its SKILL.md content.
 func (r *AgentReconciler) resolveOCISkillContent(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) (string, error) {
 	// Verify signature before pulling content, if verification is configured
-	if err := r.verifyOCIArtifact(ctx, namespace, ociRef); err != nil {
+	if err := verifyOCIArtifactRef(ctx, r.Client, namespace, ociRef); err != nil {
 		return "", fmt.Errorf("signature verification failed: %w", err)
 	}
 
@@ -365,7 +365,7 @@ func (r *AgentReconciler) resolveOCISkillContent(ctx context.Context, namespace 
 // resolveOCIFileContent pulls a Tool or Plugin from an OCI artifact and returns its file content.
 func (r *AgentReconciler) resolveOCIFileContent(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) (string, error) {
 	// Verify signature before pulling content, if verification is configured
-	if err := r.verifyOCIArtifact(ctx, namespace, ociRef); err != nil {
+	if err := verifyOCIArtifactRef(ctx, r.Client, namespace, ociRef); err != nil {
 		return "", fmt.Errorf("signature verification failed: %w", err)
 	}
 
@@ -376,53 +376,6 @@ func (r *AgentReconciler) resolveOCIFileContent(ctx context.Context, namespace s
 
 	client := oci.NewClient()
 	return client.PullFileContent(ctx, opts)
-}
-
-// verifyOCIArtifact performs Cosign signature verification if the OCIRef has verification configured.
-// Returns nil if no verification is configured or if verification succeeds.
-func (r *AgentReconciler) verifyOCIArtifact(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) error {
-	if ociRef.Verify == nil {
-		return nil // No verification configured
-	}
-
-	verifier, err := oci.NewVerifier()
-	if err != nil {
-		return fmt.Errorf("cosign not available: %w", err)
-	}
-
-	verifyOpts := oci.VerifyOptions{
-		Ref: ociRef.Ref,
-	}
-
-	// Resolve public key from Secret if specified
-	if ociRef.Verify.PublicKey != nil {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      ociRef.Verify.PublicKey.Name,
-			Namespace: namespace,
-		}, secret); err != nil {
-			return fmt.Errorf("failed to get cosign public key secret %s: %w", ociRef.Verify.PublicKey.Name, err)
-		}
-		key := ociRef.Verify.PublicKey.Key
-		if key == "" {
-			key = "cosign.pub"
-		}
-		pubKeyData, ok := secret.Data[key]
-		if !ok {
-			return fmt.Errorf("key %q not found in cosign public key secret %s", key, ociRef.Verify.PublicKey.Name)
-		}
-		verifyOpts.PublicKey = string(pubKeyData)
-	}
-
-	// Configure keyless verification if specified
-	if ociRef.Verify.Keyless != nil {
-		verifyOpts.Keyless = &oci.KeylessVerifyOptions{
-			Issuer:   ociRef.Verify.Keyless.Issuer,
-			Identity: ociRef.Verify.Keyless.Identity,
-		}
-	}
-
-	return verifier.Verify(ctx, verifyOpts)
 }
 
 // buildOCIPullOptions constructs PullOptions from an OCIArtifactRef, resolving credentials from Kubernetes Secrets.

@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
-	"github.com/samyn92/agent-operator-core/pkg/oci"
 )
 
 // PiAgentReconciler reconciles a PiAgent object.
@@ -124,7 +123,7 @@ func (r *PiAgentReconciler) validateSource(ctx context.Context, piAgent *agentsv
 		}
 		// Verify signature if verification is configured
 		if source.OCI.Verify != nil {
-			if err := r.verifyOCIArtifact(ctx, piAgent.Namespace, source.OCI); err != nil {
+			if err := verifyOCIArtifactRef(ctx, r.Client, piAgent.Namespace, source.OCI); err != nil {
 				return fmt.Errorf("OCI artifact signature verification failed for %s: %w", source.OCI.Ref, err)
 			}
 		}
@@ -207,57 +206,12 @@ func (r *PiAgentReconciler) validateToolRefs(ctx context.Context, piAgent *agent
 			return fmt.Errorf("toolRefs[%d].ref must not be empty", i)
 		}
 		if toolRef.Verify != nil {
-			if err := r.verifyOCIArtifact(ctx, piAgent.Namespace, &piAgent.Spec.ToolRefs[i]); err != nil {
+			if err := verifyOCIArtifactRef(ctx, r.Client, piAgent.Namespace, &piAgent.Spec.ToolRefs[i]); err != nil {
 				return fmt.Errorf("toolRefs[%d] (%s) signature verification failed: %w", i, toolRef.Ref, err)
 			}
 		}
 	}
 	return nil
-}
-
-// verifyOCIArtifact performs Cosign signature verification if configured.
-// Reuses the same verification patterns as AgentReconciler.
-func (r *PiAgentReconciler) verifyOCIArtifact(ctx context.Context, namespace string, ociRef *agentsv1alpha1.OCIArtifactRef) error {
-	if ociRef.Verify == nil {
-		return nil
-	}
-
-	verifier, err := oci.NewVerifier()
-	if err != nil {
-		return fmt.Errorf("cosign not available: %w", err)
-	}
-
-	verifyOpts := oci.VerifyOptions{
-		Ref: ociRef.Ref,
-	}
-
-	if ociRef.Verify.PublicKey != nil {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      ociRef.Verify.PublicKey.Name,
-			Namespace: namespace,
-		}, secret); err != nil {
-			return fmt.Errorf("failed to get cosign public key secret %s: %w", ociRef.Verify.PublicKey.Name, err)
-		}
-		key := ociRef.Verify.PublicKey.Key
-		if key == "" {
-			key = "cosign.pub"
-		}
-		pubKeyData, ok := secret.Data[key]
-		if !ok {
-			return fmt.Errorf("key %q not found in cosign public key secret %s", key, ociRef.Verify.PublicKey.Name)
-		}
-		verifyOpts.PublicKey = string(pubKeyData)
-	}
-
-	if ociRef.Verify.Keyless != nil {
-		verifyOpts.Keyless = &oci.KeylessVerifyOptions{
-			Issuer:   ociRef.Verify.Keyless.Issuer,
-			Identity: ociRef.Verify.Keyless.Identity,
-		}
-	}
-
-	return verifier.Verify(ctx, verifyOpts)
 }
 
 // setStatus updates the PiAgent status with the given phase and condition.

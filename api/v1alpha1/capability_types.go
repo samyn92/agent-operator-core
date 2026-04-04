@@ -232,6 +232,21 @@ type MCPCapabilitySpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// ToolRefs references OCI tool packages to load into the MCP server.
+	// When specified with mode "server", the operator adds init containers to pull
+	// each tool package (using crane) and the tool-bridge MCP server loads them
+	// at startup. This enables sharing the same tool packages between PiAgent
+	// (direct JS import) and OpenCode agents (via MCP bridge).
+	//
+	// Each tool package should export an AgentTool[] array from index.js.
+	// Example refs: "ghcr.io/samyn92/agent-tools/git:0.1.0",
+	//               "ghcr.io/samyn92/agent-tools/gitlab:0.1.0"
+	//
+	// When toolRefs is set and no Command is specified, the operator automatically
+	// configures the tool-bridge as the MCP server command.
+	// +optional
+	ToolRefs []OCIArtifactRef `json:"toolRefs,omitempty"`
 }
 
 // MCPServerDeploymentSpec configures the operator-managed MCP server deployment.

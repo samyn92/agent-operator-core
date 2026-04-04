@@ -108,6 +108,18 @@ func (r *CapabilityReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *CapabilityReconciler) reconcileMCPServer(ctx context.Context, capability *agentsv1alpha1.Capability) (bool, error) {
 	logger := log.FromContext(ctx)
 
+	// Verify Cosign signatures on toolRefs before deploying.
+	// This ensures supply-chain integrity for OCI tool packages.
+	if resources.MCPServerHasToolRefs(capability) {
+		for i, toolRef := range capability.Spec.MCP.ToolRefs {
+			if toolRef.Verify != nil {
+				if err := verifyOCIArtifactRef(ctx, r.Client, capability.Namespace, &capability.Spec.MCP.ToolRefs[i]); err != nil {
+					return false, fmt.Errorf("toolRefs[%d] (%s) signature verification failed: %w", i, toolRef.Ref, err)
+				}
+			}
+		}
+	}
+
 	// Reconcile the gateway ConfigMap (deny rules, etc.) before the Deployment
 	// so the ConfigMap is available at pod startup.
 	if err := r.reconcileMCPServerConfigMap(ctx, capability); err != nil {
@@ -333,6 +345,16 @@ func (r *CapabilityReconciler) validateMCPCapability(capability *agentsv1alpha1.
 	if capability.Spec.MCP == nil {
 		return fmt.Errorf("spec.mcp is required when type is MCP")
 	}
+
+	hasToolRefs := len(capability.Spec.MCP.ToolRefs) > 0
+
+	// Validate each toolRef if present
+	for i, toolRef := range capability.Spec.MCP.ToolRefs {
+		if err := validateOCIRef(&toolRef); err != nil {
+			return fmt.Errorf("spec.mcp.toolRefs[%d]: %w", i, err)
+		}
+	}
+
 	switch capability.Spec.MCP.Mode {
 	case "local":
 		if len(capability.Spec.MCP.Command) == 0 {
@@ -343,14 +365,17 @@ func (r *CapabilityReconciler) validateMCPCapability(capability *agentsv1alpha1.
 			return fmt.Errorf("spec.mcp.url is required when mode is remote")
 		}
 	case "server":
-		if len(capability.Spec.MCP.Command) == 0 {
-			return fmt.Errorf("spec.mcp.command is required when mode is server")
+		// When toolRefs are configured, command and image are auto-derived
+		// (tool-bridge image + "node /app/dist/tool-bridge.js" command).
+		// Only require them if no toolRefs are set.
+		if len(capability.Spec.MCP.Command) == 0 && !hasToolRefs {
+			return fmt.Errorf("spec.mcp.command is required when mode is server (unless toolRefs are configured)")
 		}
-		if capability.Spec.MCP.Server == nil {
-			return fmt.Errorf("spec.mcp.server is required when mode is server")
+		if capability.Spec.MCP.Server == nil && !hasToolRefs {
+			return fmt.Errorf("spec.mcp.server is required when mode is server (unless toolRefs are configured)")
 		}
-		if capability.Spec.MCP.Server.Image == "" {
-			return fmt.Errorf("spec.mcp.server.image is required")
+		if capability.Spec.MCP.Server != nil && capability.Spec.MCP.Server.Image == "" && !hasToolRefs {
+			return fmt.Errorf("spec.mcp.server.image is required (unless toolRefs are configured)")
 		}
 	default:
 		return fmt.Errorf("spec.mcp.mode must be 'local', 'remote', or 'server', got %q", capability.Spec.MCP.Mode)

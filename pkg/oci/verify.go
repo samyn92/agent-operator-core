@@ -121,3 +121,70 @@ func IsCosignAvailable() bool {
 	_, err := exec.LookPath("cosign")
 	return err == nil
 }
+
+// SecretReader is a minimal interface for fetching Kubernetes Secrets.
+// This is satisfied by any controller-runtime client.Reader (e.g., the reconciler's
+// embedded client.Client). Using a minimal interface keeps pkg/oci free of
+// controller-runtime dependencies and makes it easy to test with fakes.
+type SecretReader interface {
+	// GetSecretData returns the Data map of the named Secret in the given namespace.
+	// Returns an error if the Secret does not exist or cannot be read.
+	GetSecretData(ctx context.Context, namespace, name string) (map[string][]byte, error)
+}
+
+// OCIVerification mirrors the CRD type for signature verification config.
+// This avoids importing the api/v1alpha1 package into pkg/oci.
+type OCIVerification struct {
+	// PublicKeySecret is the name of the Secret containing the Cosign public key.
+	PublicKeySecret string
+	// PublicKeyField is the key within the Secret (defaults to "cosign.pub").
+	PublicKeyField string
+	// Keyless configures keyless OIDC-based verification.
+	Keyless *KeylessVerifyOptions
+}
+
+// VerifyArtifact performs Cosign signature verification on an OCI artifact reference.
+// This is a shared helper that replaces the duplicated verifyOCIArtifact methods
+// in AgentReconciler, PiAgentReconciler, and CapabilityReconciler.
+//
+// If verify is nil, returns nil (no verification configured).
+// Uses the provided SecretReader to fetch public key Secrets from the cluster.
+func VerifyArtifact(ctx context.Context, secrets SecretReader, namespace string, ref string, verify *OCIVerification) error {
+	if verify == nil {
+		return nil
+	}
+
+	verifier, err := NewVerifier()
+	if err != nil {
+		return fmt.Errorf("cosign not available: %w", err)
+	}
+
+	verifyOpts := VerifyOptions{
+		Ref: ref,
+	}
+
+	if verify.PublicKeySecret != "" {
+		data, err := secrets.GetSecretData(ctx, namespace, verify.PublicKeySecret)
+		if err != nil {
+			return fmt.Errorf("failed to get cosign public key secret %s: %w", verify.PublicKeySecret, err)
+		}
+		key := verify.PublicKeyField
+		if key == "" {
+			key = "cosign.pub"
+		}
+		pubKeyData, ok := data[key]
+		if !ok {
+			return fmt.Errorf("key %q not found in cosign public key secret %s", key, verify.PublicKeySecret)
+		}
+		verifyOpts.PublicKey = string(pubKeyData)
+	}
+
+	if verify.Keyless != nil {
+		verifyOpts.Keyless = &KeylessVerifyOptions{
+			Issuer:   verify.Keyless.Issuer,
+			Identity: verify.Keyless.Identity,
+		}
+	}
+
+	return verifier.Verify(ctx, verifyOpts)
+}

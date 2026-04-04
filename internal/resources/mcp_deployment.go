@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
+	"github.com/samyn92/agent-operator-core/pkg/oci"
 )
 
 const (
@@ -18,6 +19,14 @@ const (
 	// This is the unified gateway binary that handles both CLI and MCP modes.
 	// Override via the operator's configuration or environment.
 	DefaultGatewayImage = "ghcr.io/samyn92/capability-gateway:latest"
+
+	// DefaultToolBridgeImage is the default tool-bridge image.
+	// This is the MCP stdio server that loads AgentTool[] packages from /tools/.
+	// Used when an MCP capability has toolRefs configured.
+	DefaultToolBridgeImage = "ghcr.io/samyn92/tool-bridge:latest"
+
+	// DefaultCraneImage is the image used for init containers that pull OCI artifacts.
+	DefaultCraneImage = "gcr.io/go-containerregistry/crane:latest"
 )
 
 // MCPServerDeploymentName returns the Deployment name for an MCP server capability.
@@ -42,6 +51,20 @@ func MCPServerHasWorkspace(capability *agentsv1alpha1.Capability) bool {
 		capability.Spec.MCP.Server != nil &&
 		capability.Spec.MCP.Server.Workspace != nil &&
 		capability.Spec.MCP.Server.Workspace.Enabled
+}
+
+// MCPServerHasToolRefs returns true if this MCP capability has OCI tool package references.
+// When true, the operator adds crane init containers to pull tool packages and uses the
+// tool-bridge image as the MCP server (unless a custom Command is specified).
+func MCPServerHasToolRefs(capability *agentsv1alpha1.Capability) bool {
+	return capability.Spec.MCP != nil &&
+		len(capability.Spec.MCP.ToolRefs) > 0
+}
+
+// extractToolName extracts the tool name from an OCI reference.
+// Delegates to the shared oci.ExtractToolName utility.
+func extractToolName(ref string) string {
+	return oci.ExtractToolName(ref)
 }
 
 // MCPServerServiceURL returns the in-cluster URL for an MCP server capability's SSE endpoint.
@@ -153,6 +176,15 @@ func MCPServerWorkspacePVC(capability *agentsv1alpha1.Capability) *corev1.Persis
 //   - The main container runs the capability-gateway binary in MCP mode, which spawns
 //     the MCP server command as a subprocess and bridges its stdio to SSE/HTTP.
 //
+// Tool package support (toolRefs):
+//   - When the MCP capability has toolRefs, additional crane init containers pull
+//     OCI tool packages into /tools/<name>/ (same pattern as PiAgent jobs).
+//   - If no explicit Command is set, the tool-bridge image is used automatically.
+//     The tool-bridge is an MCP stdio server that loads AgentTool[] from /tools/
+//     and serves them over the MCP protocol.
+//   - This enables sharing the same tool packages between PiAgent (direct JS import)
+//     and OpenCode agents (via MCP bridge + capability-gateway SSE proxy).
+//
 // This approach:
 //   - Works in air-gapped environments (no npm install at runtime)
 //   - Keeps the user's image clean (no gateway baked in)
@@ -165,13 +197,33 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 	mcp := capability.Spec.MCP
 	server := mcp.Server
 
+	// When toolRefs are configured without an explicit server spec, use defaults.
+	// This prevents nil pointer dereferences on server.Port, server.Image, etc.
+	if server == nil {
+		server = &agentsv1alpha1.MCPServerDeploymentSpec{}
+	}
+
 	port := server.Port
 	if port == 0 {
 		port = 8080
 	}
 
-	// Build the MCP command string from the command array
+	// Build the MCP command string from the command array.
+	// When toolRefs are configured and no explicit command is set, automatically
+	// use the tool-bridge as the MCP server. This enables sharing OCI tool packages
+	// between PiAgent (direct JS import) and OpenCode agents (via MCP bridge).
+	hasToolRefs := MCPServerHasToolRefs(capability)
 	mcpCommand := strings.Join(mcp.Command, " ")
+	if mcpCommand == "" && hasToolRefs {
+		mcpCommand = "node /app/dist/tool-bridge.js"
+	}
+
+	// Determine the server image. When using toolRefs without an explicit command,
+	// the tool-bridge image is used automatically (it has Node.js + git).
+	serverImage := server.Image
+	if serverImage == "" && hasToolRefs {
+		serverImage = DefaultToolBridgeImage
+	}
 
 	// Environment variables — gateway config + secrets + explicit env vars.
 	// These go into the MCP server pod only (credential isolation).
@@ -180,6 +232,15 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		{Name: "GATEWAY_PORT", Value: fmt.Sprintf("%d", port)},
 		{Name: "GATEWAY_COMMAND", Value: mcpCommand},
 		{Name: "TOOL_NAME", Value: capability.Name},
+	}
+
+	// Tool bridge configuration — when using toolRefs, configure the bridge's
+	// tools directory and workspace path.
+	if hasToolRefs {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "TOOLS_DIR", Value: "/tools"},
+			corev1.EnvVar{Name: "SERVER_NAME", Value: capability.Name},
+		)
 	}
 
 	// Rate limiting
@@ -239,8 +300,10 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		}
 		// Tell the MCP server subprocess where the workspace is.
 		// Many MCP servers use this to restrict operations to a specific directory.
+		// The WORKSPACE env var is read by tool packages (e.g., tools/git/index.js).
 		envVars = append(envVars,
 			corev1.EnvVar{Name: "WORKSPACE_PATH", Value: workspaceMountPath},
+			corev1.EnvVar{Name: "WORKSPACE", Value: workspaceMountPath},
 		)
 	}
 
@@ -308,9 +371,16 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 			corev1.VolumeMount{Name: "workspace", MountPath: workspaceMountPath},
 		)
 	}
+	// Mount tools volume when using toolRefs — tool packages are pulled by crane
+	// init containers and loaded by the tool-bridge at startup.
+	if hasToolRefs {
+		mainVolumeMounts = append(mainVolumeMounts,
+			corev1.VolumeMount{Name: "tools", MountPath: "/tools", ReadOnly: true},
+		)
+	}
 	mainContainer := corev1.Container{
 		Name:            "mcp-server",
-		Image:           server.Image,
+		Image:           serverImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Command:         []string{"/gateway/capability-gateway"},
 		// WorkingDir must be set to a writable directory because the root filesystem
@@ -403,6 +473,95 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 		)
 	}
 
+	// Tool package volumes and init containers — when toolRefs are configured,
+	// add an emptyDir for /tools and crane init containers to pull each OCI artifact.
+	// This is the same pattern used by PiAgent's configureToolRefs() for Job pods.
+	initContainers := []corev1.Container{initContainer}
+	if hasToolRefs {
+		volumes = append(volumes, corev1.Volume{
+			Name: "tools",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+
+		// Track which pull secrets we've already added as volumes to avoid duplicates
+		// (multiple toolRefs might reference the same pull secret).
+		pullSecretVolumes := make(map[string]bool)
+
+		for i, toolRef := range mcp.ToolRefs {
+			toolName := extractToolName(toolRef.Ref)
+			toolDir := fmt.Sprintf("/tools/%s", toolName)
+
+			craneInit := corev1.Container{
+				Name:  fmt.Sprintf("tool-%d-%s", i, toolName),
+				Image: DefaultCraneImage,
+				Command: []string{
+					"sh", "-c",
+					fmt.Sprintf("mkdir -p %s && crane export %s - | tar -xf - -C %s", toolDir, toolRef.Ref, toolDir),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "tools", MountPath: "/tools"},
+				},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("50m"),
+						corev1.ResourceMemory: resource.MustParse("32Mi"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+						corev1.ResourceMemory: resource.MustParse("128Mi"),
+					},
+				},
+				SecurityContext: hardenedSecurityContext(),
+			}
+
+			// Add PullSecret support — mount the docker config secret and set
+			// DOCKER_CONFIG so crane authenticates to private registries.
+			// The secret must be type kubernetes.io/dockerconfigjson with a
+			// .dockerconfigjson key that crane reads via the standard Docker
+			// credential chain.
+			if toolRef.PullSecret != nil && toolRef.PullSecret.Name != "" {
+				secretName := toolRef.PullSecret.Name
+				volName := fmt.Sprintf("pull-secret-%s", secretName)
+
+				// Add the secret volume if we haven't already
+				if !pullSecretVolumes[secretName] {
+					volumes = append(volumes, corev1.Volume{
+						Name: volName,
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: secretName,
+								Items: []corev1.KeyToPath{
+									{
+										Key:  ".dockerconfigjson",
+										Path: "config.json",
+									},
+								},
+								Optional: boolPtr(true),
+							},
+						},
+					})
+					pullSecretVolumes[secretName] = true
+				}
+
+				// Mount at a unique path per init container to avoid conflicts
+				dockerConfigPath := fmt.Sprintf("/docker-config/%s", secretName)
+				craneInit.VolumeMounts = append(craneInit.VolumeMounts, corev1.VolumeMount{
+					Name:      volName,
+					MountPath: dockerConfigPath,
+					ReadOnly:  true,
+				})
+				craneInit.Env = append(craneInit.Env, corev1.EnvVar{
+					Name:  "DOCKER_CONFIG",
+					Value: dockerConfigPath,
+				})
+			}
+
+			initContainers = append(initContainers, craneInit)
+		}
+	}
+
 	// Use Recreate strategy when workspace PVC is attached to avoid
 	// RWX contention during rolling updates.
 	strategy := appsv1.DeploymentStrategy{
@@ -430,7 +589,7 @@ func MCPServerDeployment(capability *agentsv1alpha1.Capability) *appsv1.Deployme
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: server.ServiceAccountName,
-					InitContainers:     []corev1.Container{initContainer},
+					InitContainers:     initContainers,
 					Containers:         []corev1.Container{mainContainer},
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: boolPtr(true),

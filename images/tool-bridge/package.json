@@ -1,0 +1,19 @@
+{
+  "name": "tool-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP stdio server that bridges AgentTool[] packages to the MCP protocol, enabling shared tool packages between PiAgent and OpenCode agents",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/tool-bridge.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
