@@ -51,8 +51,8 @@ FROM node:22-alpine
 # Install CLIs that tool packages may shell out to.
 # - git: required by tools/git (execFile("git", ...))
 # - curl: useful for debugging, minimal footprint
-RUN apk add --no-cache git curl \
-    && adduser -D -u 1000 -h /home/bridge bridge
+# node:22-alpine already provides a "node" user with UID 1000.
+RUN apk add --no-cache git curl
 
 WORKDIR /app
 
@@ -63,7 +63,7 @@ COPY --from=builder /build/dist/ ./dist/
 # /tools   — OCI tool packages pulled by init containers
 # /workspace — shared workspace for tool execution (may be PVC)
 RUN mkdir -p /tools /workspace \
-    && chown -R bridge:bridge /tools /workspace
+    && chown -R node:node /tools /workspace
 
 USER 1000:1000
 

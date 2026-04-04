@@ -43,9 +43,9 @@ RUN npx tsc
 # Stage 2: Production — minimal runtime image
 FROM node:22-alpine
 
-# Install git (agents may need it for repo operations)
-RUN apk add --no-cache git \
-    && adduser -D -u 1000 -h /home/runner runner
+# Install git (agents may need it for repo operations).
+# node:22-alpine already provides a "node" user with UID 1000.
+RUN apk add --no-cache git
 
 WORKDIR /app
 
@@ -57,7 +57,7 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY --from=builder /build/dist/ ./dist/
 
 # Create mount points for agent code and output
-RUN mkdir -p /agent /output && chown -R runner:runner /agent /output
+RUN mkdir -p /agent /output && chown -R node:node /agent /output
 
 USER 1000:1000
 
