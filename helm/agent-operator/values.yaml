@@ -14,6 +14,12 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# RBAC configuration
+rbac:
+  # Use ClusterRole/ClusterRoleBinding instead of namespace-scoped Role/RoleBinding.
+  # Set to true if the operator needs to manage agents across multiple namespaces.
+  clusterScoped: false
+
 resources:
   limits:
     memory: 256Mi

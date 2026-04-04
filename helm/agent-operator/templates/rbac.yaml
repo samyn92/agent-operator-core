@@ -1,8 +1,15 @@
+{{- $clusterScoped := .Values.rbac.clusterScoped | default false -}}
 apiVersion: rbac.authorization.k8s.io/v1
+{{- if $clusterScoped }}
+kind: ClusterRole
+{{- else }}
 kind: Role
+{{- end }}
 metadata:
   name: {{ include "agent-operator.fullname" . }}
+  {{- if not $clusterScoped }}
   namespace: {{ .Release.Namespace }}
+  {{- end }}
   labels:
     {{- include "agent-operator.labels" . | nindent 4 }}
 rules:
@@ -13,6 +20,7 @@ rules:
       - agents
       - capabilities
       - channels
+      - piagents
       - workflows
       - workflowruns
     verbs:
@@ -27,10 +35,14 @@ rules:
       - agents.io
     resources:
       - agents/status
+      - agents/finalizers
       - capabilities/status
       - channels/status
+      - piagents/status
+      - piagents/finalizers
       - workflows/status
       - workflowruns/status
+      - workflowruns/finalizers
     verbs:
       - get
       - patch
@@ -51,6 +63,21 @@ rules:
       - update
       - patch
       - delete
+  # Pods — needed by WorkflowRun controller for Job pod log reading
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
   - apiGroups:
       - apps
     resources:
@@ -99,15 +126,25 @@ rules:
       - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+{{- if $clusterScoped }}
+kind: ClusterRoleBinding
+{{- else }}
 kind: RoleBinding
+{{- end }}
 metadata:
   name: {{ include "agent-operator.fullname" . }}
+  {{- if not $clusterScoped }}
   namespace: {{ .Release.Namespace }}
+  {{- end }}
   labels:
     {{- include "agent-operator.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
+  {{- if $clusterScoped }}
+  kind: ClusterRole
+  {{- else }}
   kind: Role
+  {{- end }}
   name: {{ include "agent-operator.fullname" . }}
 subjects:
   - kind: ServiceAccount
