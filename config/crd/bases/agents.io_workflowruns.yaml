@@ -101,6 +101,55 @@ spec:
                     error:
                       description: Error contains error message if the step failed
                       type: string
+                    events:
+                      description: |-
+                        Events contains real-time trace events from the pi-runner (tool calls, messages, errors).
+                        Populated via callback during execution.
+                      items:
+                        description: |-
+                          StepEvent represents a single event during step execution (tool call, message, error).
+                          These are reported in real-time by the pi-runner via callback to the operator.
+                        properties:
+                          content:
+                            description: Content is the text content (for message
+                              events) or error message (for error events)
+                            type: string
+                          duration:
+                            description: Duration is how long the event took in milliseconds
+                              (for tool_call events)
+                            format: int64
+                            type: integer
+                          toolArgs:
+                            description: ToolArgs is a JSON string of the tool call
+                              arguments (for tool_call events)
+                            type: string
+                          toolName:
+                            description: ToolName is the tool that was called (for
+                              tool_call events)
+                            type: string
+                          toolResult:
+                            description: ToolResult is a JSON string of the tool call
+                              result (for tool_call events)
+                            type: string
+                          ts:
+                            description: Timestamp is when the event occurred (Unix
+                              millis)
+                            format: int64
+                            type: integer
+                          type:
+                            description: 'Type is the event kind: tool_call, message,
+                              error, thinking'
+                            enum:
+                            - tool_call
+                            - message
+                            - error
+                            - thinking
+                            type: string
+                        required:
+                        - ts
+                        - type
+                        type: object
+                      type: array
                     jobName:
                       description: JobName is the Kubernetes Job name for this step
                         (Pi runtime only)
