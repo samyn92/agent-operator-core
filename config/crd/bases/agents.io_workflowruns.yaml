@@ -101,6 +101,10 @@ spec:
                     error:
                       description: Error contains error message if the step failed
                       type: string
+                    jobName:
+                      description: JobName is the Kubernetes Job name for this step
+                        (Pi runtime only)
+                      type: string
                     name:
                       description: Name is the step name
                       type: string
@@ -118,12 +122,20 @@ spec:
                       type: string
                     sessionID:
                       description: SessionID is the OpenCode session ID for async
-                        polling
+                        polling (OpenCode runtime only)
                       type: string
                     startTime:
                       description: StartTime is when the step started
                       format: date-time
                       type: string
+                    tokensUsed:
+                      description: TokensUsed is the total tokens consumed during
+                        this step (Pi runtime only)
+                      type: integer
+                    toolCalls:
+                      description: ToolCalls is the number of tool invocations during
+                        this step (Pi runtime only)
+                      type: integer
                   required:
                   - name
                   - phase

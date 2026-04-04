@@ -22,6 +22,10 @@ go.work.sum
 *.swp
 *.swo
 
+# Node.js (pi-runner image builds)
+node_modules/
+dist/
+
 # OS
 .DS_Store
 Thumbs.db

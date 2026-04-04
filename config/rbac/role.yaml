@@ -20,11 +20,26 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
   - agents.io
   resources:
   - agents
   - capabilities
   - channels
+  - piagents
   - workflowruns
   - workflows
   verbs:
@@ -41,6 +56,7 @@ rules:
   - agents/finalizers
   - capabilities/finalizers
   - channels/finalizers
+  - piagents/finalizers
   - workflowruns/finalizers
   - workflows/finalizers
   verbs:
@@ -51,6 +67,7 @@ rules:
   - agents/status
   - capabilities/status
   - channels/status
+  - piagents/status
   - workflowruns/status
   - workflows/status
   verbs:
@@ -68,6 +85,16 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - networking.k8s.io

@@ -14,10 +14,17 @@ type WorkflowSpec struct {
 	// SIMPLE MODE: Direct agent invocation (no steps needed)
 	// ==========================================================================
 
-	// Agent is the agent to invoke (simple mode - alternative to Steps)
-	// When set, the workflow directly calls this agent with the Prompt.
+	// Agent is the Agent CRD to invoke (simple mode - alternative to Steps).
+	// Uses the OpenCode runtime (always-on Deployment, ACP/HTTP protocol).
+	// Exactly one of Agent or PiAgent must be set in simple mode.
 	// +optional
 	Agent string `json:"agent,omitempty"`
+
+	// PiAgent is the PiAgent CRD to invoke (simple mode - alternative to Steps).
+	// Uses the Pi runtime (on-demand Job, JSONL event stream).
+	// Exactly one of Agent or PiAgent must be set in simple mode.
+	// +optional
+	PiAgent string `json:"piAgent,omitempty"`
 
 	// Prompt is the message to send to the agent (simple mode)
 	// Supports templating with {{.trigger}} for trigger data.
@@ -242,9 +249,15 @@ type WorkflowStep struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// Agent references the Agent to invoke
-	// +kubebuilder:validation:Required
-	Agent string `json:"agent"`
+	// Agent references an Agent CRD to invoke (OpenCode runtime).
+	// Exactly one of Agent or PiAgent must be set per step.
+	// +optional
+	Agent string `json:"agent,omitempty"`
+
+	// PiAgent references a PiAgent CRD to invoke (Pi runtime).
+	// Exactly one of Agent or PiAgent must be set per step.
+	// +optional
+	PiAgent string `json:"piAgent,omitempty"`
 
 	// Prompt is the message to send to the agent
 	// Supports templating with {{.trigger}} and {{.steps.<name>.output}}
@@ -382,9 +395,29 @@ type StepResult struct {
 	// +optional
 	Error string `json:"error,omitempty"`
 
-	// SessionID is the OpenCode session ID for async polling
+	// ==========================================================================
+	// OPENCODE-SPECIFIC FIELDS
+	// ==========================================================================
+
+	// SessionID is the OpenCode session ID for async polling (OpenCode runtime only)
 	// +optional
 	SessionID string `json:"sessionID,omitempty"`
+
+	// ==========================================================================
+	// PI-SPECIFIC FIELDS
+	// ==========================================================================
+
+	// JobName is the Kubernetes Job name for this step (Pi runtime only)
+	// +optional
+	JobName string `json:"jobName,omitempty"`
+
+	// ToolCalls is the number of tool invocations during this step (Pi runtime only)
+	// +optional
+	ToolCalls int `json:"toolCalls,omitempty"`
+
+	// TokensUsed is the total tokens consumed during this step (Pi runtime only)
+	// +optional
+	TokensUsed int `json:"tokensUsed,omitempty"`
 }
 
 // +kubebuilder:object:root=true

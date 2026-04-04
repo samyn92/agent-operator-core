@@ -57,8 +57,9 @@ spec:
             properties:
               agent:
                 description: |-
-                  Agent is the agent to invoke (simple mode - alternative to Steps)
-                  When set, the workflow directly calls this agent with the Prompt.
+                  Agent is the Agent CRD to invoke (simple mode - alternative to Steps).
+                  Uses the OpenCode runtime (always-on Deployment, ACP/HTTP protocol).
+                  Exactly one of Agent or PiAgent must be set in simple mode.
                 type: string
               output:
                 description: Output configures where to send workflow results
@@ -189,6 +190,12 @@ spec:
                     - url
                     type: object
                 type: object
+              piAgent:
+                description: |-
+                  PiAgent is the PiAgent CRD to invoke (simple mode - alternative to Steps).
+                  Uses the Pi runtime (on-demand Job, JSONL event stream).
+                  Exactly one of Agent or PiAgent must be set in simple mode.
+                type: string
               prompt:
                 description: |-
                   Prompt is the message to send to the agent (simple mode)
@@ -203,7 +210,9 @@ spec:
                   description: WorkflowStep defines a single step in the workflow
                   properties:
                     agent:
-                      description: Agent references the Agent to invoke
+                      description: |-
+                        Agent references an Agent CRD to invoke (OpenCode runtime).
+                        Exactly one of Agent or PiAgent must be set per step.
                       type: string
                     condition:
                       description: |-
@@ -219,6 +228,11 @@ spec:
                       description: Name is the step identifier (auto-generated if
                         not provided)
                       type: string
+                    piAgent:
+                      description: |-
+                        PiAgent references a PiAgent CRD to invoke (Pi runtime).
+                        Exactly one of Agent or PiAgent must be set per step.
+                      type: string
                     prompt:
                       description: |-
                         Prompt is the message to send to the agent
@@ -230,7 +244,6 @@ spec:
                         (default: 5m)'
                       type: string
                   required:
-                  - agent
                   - prompt
                   type: object
                 type: array

@@ -11,6 +11,7 @@ import (
 	"text/template"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +34,10 @@ type WorkflowRunReconciler struct {
 // +kubebuilder:rbac:groups=agents.io,resources=workflowruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agents.io,resources=workflowruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agents.io,resources=workflowruns/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agents.io,resources=piagents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
 func (r *WorkflowRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -62,8 +67,8 @@ func (r *WorkflowRunReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// Determine if this is simple mode (agent + prompt) or advanced mode (steps)
-	isSimpleMode := workflow.Spec.Agent != "" && workflow.Spec.Prompt != ""
+	// Determine if this is simple mode (agent/piAgent + prompt) or advanced mode (steps)
+	isSimpleMode := (workflow.Spec.Agent != "" || workflow.Spec.PiAgent != "") && workflow.Spec.Prompt != ""
 
 	// Initialize run if not started
 	if run.Status.Phase == "" {
@@ -134,7 +139,26 @@ func (r *WorkflowRunReconciler) reconcileSimpleMode(ctx context.Context, run *ag
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	// Get the agent
+	// Branch: PiAgent (Job-based) vs Agent (HTTP-based)
+	if workflow.Spec.PiAgent != "" {
+		// Build a synthetic step for the simple-mode PiAgent execution
+		simpleStep := agentsv1alpha1.WorkflowStep{
+			Name:    "main",
+			PiAgent: workflow.Spec.PiAgent,
+			Prompt:  workflow.Spec.Prompt,
+		}
+		result, err := r.reconcilePiAgentStep(ctx, run, simpleStep, 0, stepResult)
+		if err != nil {
+			return result, err
+		}
+		// Check if the step completed (succeeded or failed) — if so, finish the run
+		if stepResult.Phase == "Succeeded" {
+			return ctrl.Result{}, r.succeedRun(ctx, run)
+		}
+		return result, nil
+	}
+
+	// Get the agent (OpenCode runtime)
 	agent := &agentsv1alpha1.Agent{}
 	if err := r.Get(ctx, types.NamespacedName{Name: workflow.Spec.Agent, Namespace: run.Namespace}, agent); err != nil {
 		return ctrl.Result{}, r.failRun(ctx, run, fmt.Sprintf("Agent %s not found", workflow.Spec.Agent))
@@ -250,7 +274,36 @@ func (r *WorkflowRunReconciler) reconcileStepsMode(ctx context.Context, run *age
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	// Get the agent
+	// Branch: PiAgent (Job-based) vs Agent (HTTP-based)
+	if step.PiAgent != "" {
+		result, err := r.reconcilePiAgentStep(ctx, run, step, currentStep, stepResult)
+		if err != nil {
+			return result, err
+		}
+		// Check if the Pi step completed — advance to next step
+		if stepResult.Phase == "Succeeded" {
+			run.Status.CurrentStep++
+			if err := r.Status().Update(ctx, run); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		if stepResult.Phase == "Failed" {
+			continueOnError := step.ContinueOnError != nil && *step.ContinueOnError
+			if continueOnError {
+				run.Status.CurrentStep++
+				if err := r.Status().Update(ctx, run); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			// failStep already called by reconcilePiAgentStep
+			return result, nil
+		}
+		return result, nil
+	}
+
+	// Get the agent (OpenCode runtime)
 	agent := &agentsv1alpha1.Agent{}
 	if err := r.Get(ctx, types.NamespacedName{Name: step.Agent, Namespace: run.Namespace}, agent); err != nil {
 		return ctrl.Result{}, r.failStep(ctx, run, currentStep, fmt.Sprintf("Agent %s not found", step.Agent))
@@ -1127,5 +1180,6 @@ func (r *WorkflowRunReconciler) getSecretValue(ctx context.Context, namespace st
 func (r *WorkflowRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentsv1alpha1.WorkflowRun{}).
+		Owns(&batchv1.Job{}).
 		Complete(r)
 }

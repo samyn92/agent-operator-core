@@ -1,0 +1,471 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: piagents.agents.io
+spec:
+  group: agents.io
+  names:
+    kind: PiAgent
+    listKind: PiAgentList
+    plural: piagents
+    singular: piagent
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.model
+      name: Model
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      priority: 1
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PiAgent is the Schema for the piagents API.
+          PiAgent defines a lightweight, workflow-optimized AI agent that runs as an
+          on-demand Kubernetes Job using the pi-agent-core runtime.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PiAgentSpec defines the desired state of PiAgent.
+            properties:
+              identity:
+                description: Identity configures the agent's personality (display
+                  name, system prompt).
+                properties:
+                  name:
+                    description: Name is the agent's display name
+                    type: string
+                  systemPrompt:
+                    description: SystemPrompt is the system prompt for the agent
+                    type: string
+                type: object
+              image:
+                description: |-
+                  Image overrides the default pi-runner base image.
+                  Default: ghcr.io/samyn92/pi-runner:latest
+                type: string
+              model:
+                description: |-
+                  Model is the AI model to use, in "provider/model" format.
+                  The provider portion must match a name in the providers list.
+                  Examples: "anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"
+                pattern: ^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$
+                type: string
+              providers:
+                description: |-
+                  Providers configures AI providers available to this agent.
+                  At least one provider must be configured, and the provider referenced
+                  in spec.model must exist in this list.
+                items:
+                  description: "ProviderConfig configures an AI provider.\n\nSupports
+                    three patterns:\n\n1. Cloud provider (anthropic, openai, google)
+                    — only needs name + API key:\n\n\tname: anthropic\n\tapiKeySecret:
+                    {name: my-secret, key: api-key}\n\n2. Custom provider (on-premise
+                    gateway, proxy) — needs baseURL, models, optionally auth:\n\n\tname:
+                    dnabot-prod\n\tbaseURL: \"https://gateway.example.com/v1\"\n\tnpm:
+                    \"@ai-sdk/openai-compatible\"\n\tmodels:\n\t  - id: Kimi-K2.5\n\t
+                    \   contextLimit: 262144\n\n3. Local provider (ollama, lm-studio)
+                    — just baseURL and models, no auth needed:\n\n\tname: ollama\n\tbaseURL:
+                    \"http://ollama.infra.svc:11434/v1\"\n\tmodels:\n\t  - id: qwen2.5-coder"
+                  properties:
+                    apiKeySecret:
+                      description: |-
+                        APIKeySecret references a secret containing the API key.
+                        Required for cloud providers (anthropic, openai, google).
+                        Optional for custom/local providers that use alternative auth (e.g., OAuth2 via envFrom).
+                      properties:
+                        key:
+                          description: Key is the key in the secret
+                          type: string
+                        name:
+                          description: Name is the name of the secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    baseURL:
+                      description: |-
+                        BaseURL is the API endpoint URL for custom/local providers.
+                        Examples: "http://ollama.infra.svc:11434/v1", "https://gateway.example.com/v1"
+                        Not needed for cloud providers — OpenCode uses their default endpoints.
+                      type: string
+                    displayName:
+                      description: |-
+                        DisplayName is a human-readable name shown in the UI.
+                        If not set, defaults to the Name field.
+                      type: string
+                    headers:
+                      additionalProperties:
+                        type: string
+                      description: Headers are custom HTTP headers sent with each
+                        request to this provider.
+                      type: object
+                    models:
+                      description: |-
+                        Models defines the models available from this provider.
+                        Required for custom providers so OpenCode knows what models are available.
+                        Not needed for cloud providers — OpenCode auto-discovers their models.
+                      items:
+                        description: ModelDefinition defines a model available from
+                          a custom provider.
+                        properties:
+                          contextLimit:
+                            description: ContextLimit is the maximum input context
+                              length in tokens.
+                            type: integer
+                          id:
+                            description: |-
+                              ID is the model identifier used in the model string (e.g., "qwen2.5-coder").
+                              Referenced as "provider-name/model-id" (e.g., "ollama/qwen2.5-coder").
+                            type: string
+                          name:
+                            description: Name is the human-readable display name for
+                              this model.
+                            type: string
+                          outputLimit:
+                            description: OutputLimit is the maximum output length
+                              in tokens.
+                            type: integer
+                        required:
+                        - id
+                        type: object
+                      type: array
+                    name:
+                      description: |-
+                        Name is the provider identifier.
+                        For cloud providers, use: anthropic, openai, google.
+                        For custom/local providers, use any unique identifier (e.g., "dnabot-prod", "ollama").
+                      minLength: 1
+                      type: string
+                    npm:
+                      description: |-
+                        NPM is the AI SDK package to use for this provider.
+                        Defaults to "@ai-sdk/openai-compatible" for custom providers.
+                        Not needed for built-in cloud providers (anthropic, openai, google).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              resources:
+                description: |-
+                  Resources defines compute resources for the Job pod.
+                  If not set, uses the pi-runner image defaults.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              serviceAccountName:
+                description: |-
+                  ServiceAccountName is the Kubernetes ServiceAccount for the Job pod.
+                  Use this when tools need access to Kubernetes APIs (e.g., kubectl, helm).
+                type: string
+              source:
+                description: |-
+                  Source defines the agent's TypeScript code.
+                  The source must export tools (AgentTool[]) and config ({ systemPrompt }).
+                  Exactly one of oci, inline, or configMapRef must be set.
+                properties:
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef references a ConfigMap containing the agent code.
+                      The key should contain the TypeScript module.
+                    properties:
+                      key:
+                        description: Key is the key in the ConfigMap
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  inline:
+                    description: |-
+                      Inline contains the agent TypeScript code directly in the CRD.
+                      Useful for simple agents that fit in a few hundred lines.
+                      The code is mounted as a ConfigMap volume in the Job pod.
+                    type: string
+                  oci:
+                    description: |-
+                      OCI references an OCI artifact containing the agent TypeScript module.
+                      The artifact is pulled into the Job pod via an init container.
+                    properties:
+                      digest:
+                        description: |-
+                          Digest is an optional content digest for immutable pinning.
+                          When specified, the artifact is verified against this digest after pull.
+                          Format: <algorithm>:<hex> (e.g., "sha256:abc123...").
+                          If both tag (in ref) and digest are specified, digest takes precedence for verification.
+                        type: string
+                      pullSecret:
+                        description: |-
+                          PullSecret references a Kubernetes Secret containing registry credentials.
+                          The secret should contain a .dockerconfigjson key (type kubernetes.io/dockerconfigjson)
+                          or individual username/password keys.
+                          If not specified, the artifact is pulled anonymously (public registries).
+                        properties:
+                          key:
+                            description: Key is the key in the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      ref:
+                        description: |-
+                          Ref is the OCI artifact reference (e.g., "ghcr.io/org/skills/my-skill:1.0.0").
+                          Follows the standard OCI reference format: <registry>/<repository>:<tag> or
+                          <registry>/<repository>@<digest>.
+                        minLength: 1
+                        type: string
+                      verify:
+                        description: |-
+                          Verify configures optional Cosign signature verification.
+                          When specified, the artifact's signature is verified before the content is used.
+                          If verification fails, the capability enters a Failed phase.
+                        properties:
+                          keyless:
+                            description: |-
+                              Keyless configures keyless (OIDC-based) Cosign verification.
+                              Verifies the artifact was signed by a specific identity via an OIDC issuer.
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              identity:
+                                description: |-
+                                  Identity is the expected signing identity (email or URI).
+                                  Example: "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v1.0.0"
+                                type: string
+                              issuer:
+                                description: |-
+                                  Issuer is the expected OIDC issuer URL.
+                                  Example: "https://token.actions.githubusercontent.com" for GitHub Actions.
+                                type: string
+                            required:
+                            - identity
+                            - issuer
+                            type: object
+                          provider:
+                            default: cosign
+                            description: |-
+                              Provider is the signature verification provider.
+                              Currently only "cosign" is supported.
+                            enum:
+                            - cosign
+                            type: string
+                          publicKey:
+                            description: |-
+                              PublicKey references a Secret containing the Cosign public key (PEM format).
+                              Used for key-based verification (cosign verify --key).
+                              Exactly one of publicKey or keyless must be specified.
+                            properties:
+                              key:
+                                description: Key is the key in the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                        type: object
+                    required:
+                    - ref
+                    type: object
+                type: object
+              thinkingLevel:
+                default: "off"
+                description: |-
+                  ThinkingLevel controls the model's reasoning depth.
+                  Higher levels use more tokens but produce better results for complex tasks.
+                enum:
+                - "off"
+                - minimal
+                - low
+                - medium
+                - high
+                - xhigh
+                type: string
+              timeout:
+                default: 5m
+                description: |-
+                  Timeout is the maximum execution time for a single invocation.
+                  The Job is terminated if it exceeds this duration.
+                type: string
+              toolExecution:
+                default: parallel
+                description: |-
+                  ToolExecution controls whether tools run in parallel or sequentially.
+                  Parallel execution is faster but may cause issues with tools that have side effects.
+                enum:
+                - parallel
+                - sequential
+                type: string
+            required:
+            - model
+            - providers
+            - source
+            type: object
+          status:
+            description: PiAgentStatus defines the observed state of PiAgent.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              phase:
+                description: |-
+                  Phase is the current phase of the PiAgent definition.
+                  Ready means the source is resolved and the agent can be invoked.
+                enum:
+                - Ready
+                - Pending
+                - Failed
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -45,16 +45,74 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	logger.V(1).Info("Reconciling Workflow", "name", req.Name, "namespace", req.Namespace)
 
-	// Verify all referenced agents exist
-	for i, step := range workflow.Spec.Steps {
+	// Validate simple mode: if Agent or PiAgent is set at the top level, ensure exactly one is set
+	if workflow.Spec.Agent != "" && workflow.Spec.PiAgent != "" {
+		return ctrl.Result{}, r.updateStatusError(ctx, workflow, "InvalidSpec",
+			"Simple mode: only one of spec.agent or spec.piAgent may be set, not both")
+	}
+
+	// Validate simple mode agent reference
+	if workflow.Spec.Agent != "" {
 		agent := &agentsv1alpha1.Agent{}
-		if err := r.Get(ctx, types.NamespacedName{Name: step.Agent, Namespace: workflow.Namespace}, agent); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: workflow.Spec.Agent, Namespace: workflow.Namespace}, agent); err != nil {
 			if errors.IsNotFound(err) {
-				logger.Error(err, "Referenced Agent not found", "step", i, "agent", step.Agent)
+				logger.Error(err, "Referenced Agent not found (simple mode)", "agent", workflow.Spec.Agent)
 				return ctrl.Result{}, r.updateStatusError(ctx, workflow, "AgentNotFound",
-					fmt.Sprintf("Step %d: Agent %s not found", i, step.Agent))
+					fmt.Sprintf("Simple mode: Agent %s not found", workflow.Spec.Agent))
 			}
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Validate simple mode piAgent reference
+	if workflow.Spec.PiAgent != "" {
+		piAgent := &agentsv1alpha1.PiAgent{}
+		if err := r.Get(ctx, types.NamespacedName{Name: workflow.Spec.PiAgent, Namespace: workflow.Namespace}, piAgent); err != nil {
+			if errors.IsNotFound(err) {
+				logger.Error(err, "Referenced PiAgent not found (simple mode)", "piAgent", workflow.Spec.PiAgent)
+				return ctrl.Result{}, r.updateStatusError(ctx, workflow, "PiAgentNotFound",
+					fmt.Sprintf("Simple mode: PiAgent %s not found", workflow.Spec.PiAgent))
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Verify all referenced agents in steps exist
+	for i, step := range workflow.Spec.Steps {
+		// Validate exactly one runtime is set per step
+		if step.Agent == "" && step.PiAgent == "" {
+			return ctrl.Result{}, r.updateStatusError(ctx, workflow, "InvalidStep",
+				fmt.Sprintf("Step %d (%s): exactly one of agent or piAgent must be set", i, step.Name))
+		}
+		if step.Agent != "" && step.PiAgent != "" {
+			return ctrl.Result{}, r.updateStatusError(ctx, workflow, "InvalidStep",
+				fmt.Sprintf("Step %d (%s): only one of agent or piAgent may be set, not both", i, step.Name))
+		}
+
+		// Validate Agent reference
+		if step.Agent != "" {
+			agent := &agentsv1alpha1.Agent{}
+			if err := r.Get(ctx, types.NamespacedName{Name: step.Agent, Namespace: workflow.Namespace}, agent); err != nil {
+				if errors.IsNotFound(err) {
+					logger.Error(err, "Referenced Agent not found", "step", i, "agent", step.Agent)
+					return ctrl.Result{}, r.updateStatusError(ctx, workflow, "AgentNotFound",
+						fmt.Sprintf("Step %d: Agent %s not found", i, step.Agent))
+				}
+				return ctrl.Result{}, err
+			}
+		}
+
+		// Validate PiAgent reference
+		if step.PiAgent != "" {
+			piAgent := &agentsv1alpha1.PiAgent{}
+			if err := r.Get(ctx, types.NamespacedName{Name: step.PiAgent, Namespace: workflow.Namespace}, piAgent); err != nil {
+				if errors.IsNotFound(err) {
+					logger.Error(err, "Referenced PiAgent not found", "step", i, "piAgent", step.PiAgent)
+					return ctrl.Result{}, r.updateStatusError(ctx, workflow, "PiAgentNotFound",
+						fmt.Sprintf("Step %d: PiAgent %s not found", i, step.PiAgent))
+				}
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
