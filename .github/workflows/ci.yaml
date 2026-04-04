@@ -38,7 +38,8 @@ jobs:
         run: controller-gen crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=/tmp/crds
 
       - name: Check for drift
-        run: diff -r /tmp/crds config/crd/bases/ || (echo "CRDs are out of date. Run: controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=config/crd/bases" && exit 1)
+        run: |
+          diff -r /tmp/crds config/crd/bases/ || (echo "CRDs are out of date. Run: controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=config/crd/bases" && exit 1)
 
   helm-lint:
     if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
