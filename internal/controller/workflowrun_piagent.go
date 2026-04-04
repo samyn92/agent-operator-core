@@ -99,7 +99,7 @@ func (r *WorkflowRunReconciler) createPiAgentJob(
 	}
 
 	// Build the env vars (needs secret lookup for API key)
-	env, err := r.buildPiAgentEnv(ctx, run, piAgent, prompt)
+	env, err := r.buildPiAgentEnv(ctx, run, piAgent, step, stepIndex, prompt)
 	if err != nil {
 		return ctrl.Result{}, r.failStep(ctx, run, stepIndex, fmt.Sprintf("Failed to build env: %v", err))
 	}
@@ -165,7 +165,7 @@ func (r *WorkflowRunReconciler) pollPiAgentJob(
 		logger.Info("PiAgent Job succeeded", "job", stepResult.JobName, "step", stepIndex)
 
 		// Fetch output from pod logs
-		output, toolCalls, tokensUsed, err := r.fetchPiAgentJobOutput(ctx, job)
+		output, toolCalls, tokensUsed, logEvents, err := r.fetchPiAgentJobOutput(ctx, job)
 		if err != nil {
 			logger.Error(err, "Failed to fetch Job output, using empty output", "job", stepResult.JobName)
 			output = "[Failed to retrieve agent output]"
@@ -176,6 +176,13 @@ func (r *WorkflowRunReconciler) pollPiAgentJob(
 		stepResult.ToolCalls = toolCalls
 		stepResult.TokensUsed = tokensUsed
 		stepResult.CompletionTime = &metav1.Time{Time: time.Now()}
+
+		// Merge log-parsed events with any callback events already stored.
+		// If callback events exist, prefer them (they were written in real-time).
+		// If no callback events, use the log-parsed ones as a fallback.
+		if len(stepResult.Events) == 0 && len(logEvents) > 0 {
+			stepResult.Events = logEvents
+		}
 
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
@@ -190,10 +197,13 @@ func (r *WorkflowRunReconciler) pollPiAgentJob(
 			logger.Info("PiAgent Job failed", "job", stepResult.JobName, "reason", condition.Reason, "message", condition.Message)
 
 			// Try to get output even from failed jobs (partial results)
-			output, toolCalls, tokensUsed, _ := r.fetchPiAgentJobOutput(ctx, job)
+			output, toolCalls, tokensUsed, logEvents, _ := r.fetchPiAgentJobOutput(ctx, job)
 			stepResult.Output = output
 			stepResult.ToolCalls = toolCalls
 			stepResult.TokensUsed = tokensUsed
+			if len(stepResult.Events) == 0 && len(logEvents) > 0 {
+				stepResult.Events = logEvents
+			}
 
 			return ctrl.Result{}, r.failStep(ctx, run, stepIndex, errMsg)
 		}
@@ -493,6 +503,8 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 	ctx context.Context,
 	run *agentsv1alpha1.WorkflowRun,
 	piAgent *agentsv1alpha1.PiAgent,
+	step agentsv1alpha1.WorkflowStep,
+	stepIndex int,
 	prompt string,
 ) ([]corev1.EnvVar, error) {
 	// Parse provider/model from the spec.model field
@@ -554,6 +566,20 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 		env = append(env, piAgent.Spec.Env...)
 	}
 
+	// Add callback URL for real-time tracing.
+	// Pi-runner POSTs events to this URL during execution.
+	if r.CallbackBaseURL != "" {
+		stepName := step.Name
+		if stepName == "" {
+			stepName = fmt.Sprintf("step-%d", stepIndex)
+		}
+		callbackURL := fmt.Sprintf("%s/%s/%s/%s", r.CallbackBaseURL, run.Namespace, run.Name, stepName)
+		env = append(env, corev1.EnvVar{
+			Name:  "CALLBACK_URL",
+			Value: callbackURL,
+		})
+	}
+
 	return env, nil
 }
 
@@ -562,7 +588,7 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 // =============================================================================
 
 // fetchPiAgentJobOutput reads the pod logs of a completed PiAgent Job and extracts
-// the structured output. Returns the text output, tool call count, and tokens used.
+// the structured output. Returns the text output, tool call count, tokens used, and trace events.
 //
 // The pi-runner writes JSONL events to stdout. We parse the last `agent_end` event
 // to get the final messages, and also read `/output/result.json` if available.
@@ -570,7 +596,7 @@ func (r *WorkflowRunReconciler) buildPiAgentEnv(
 func (r *WorkflowRunReconciler) fetchPiAgentJobOutput(
 	ctx context.Context,
 	job *batchv1.Job,
-) (output string, toolCalls int, tokensUsed int, err error) {
+) (output string, toolCalls int, tokensUsed int, events []agentsv1alpha1.StepEvent, err error) {
 	logger := log.FromContext(ctx)
 
 	// List pods belonging to this Job
@@ -582,11 +608,11 @@ func (r *WorkflowRunReconciler) fetchPiAgentJobOutput(
 		Namespace:     job.Namespace,
 		LabelSelector: labelSelector,
 	}); err != nil {
-		return "", 0, 0, fmt.Errorf("failed to list Job pods: %w", err)
+		return "", 0, 0, nil, fmt.Errorf("failed to list Job pods: %w", err)
 	}
 
 	if len(podList.Items) == 0 {
-		return "", 0, 0, fmt.Errorf("no pods found for Job %s", job.Name)
+		return "", 0, 0, nil, fmt.Errorf("no pods found for Job %s", job.Name)
 	}
 
 	// Use the first pod (Jobs with backoffLimit=0 create at most one pod)
@@ -597,11 +623,11 @@ func (r *WorkflowRunReconciler) fetchPiAgentJobOutput(
 	// We need to get a raw kubernetes clientset from the controller-runtime client
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("failed to get REST config: %w", err)
+		return "", 0, 0, nil, fmt.Errorf("failed to get REST config: %w", err)
 	}
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("failed to create clientset: %w", err)
+		return "", 0, 0, nil, fmt.Errorf("failed to create clientset: %w", err)
 	}
 
 	logOpts := &corev1.PodLogOptions{
@@ -609,7 +635,7 @@ func (r *WorkflowRunReconciler) fetchPiAgentJobOutput(
 	}
 	logStream, err := clientset.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, logOpts).Stream(ctx)
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("failed to stream pod logs: %w", err)
+		return "", 0, 0, nil, fmt.Errorf("failed to stream pod logs: %w", err)
 	}
 	defer logStream.Close()
 
@@ -638,8 +664,9 @@ type piRunnerEvent struct {
 }
 
 // parsePiRunnerLogs parses JSONL events from the pi-runner stdout.
-// It extracts text from message_end events and aggregates tool/token stats.
-func parsePiRunnerLogs(reader interface{ Read([]byte) (int, error) }) (output string, toolCalls int, tokensUsed int, err error) {
+// It extracts text from message_end events, aggregates tool/token stats,
+// and collects individual StepEvents for tool calls.
+func parsePiRunnerLogs(reader interface{ Read([]byte) (int, error) }) (output string, toolCalls int, tokensUsed int, events []agentsv1alpha1.StepEvent, err error) {
 	scanner := bufio.NewScanner(reader)
 	// Increase buffer size for potentially large events
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -666,12 +693,38 @@ func parsePiRunnerLogs(reader interface{ Read([]byte) (int, error) }) (output st
 					text := extractTextFromMessage(msg)
 					if text != "" {
 						messages = append(messages, text)
+						events = append(events, agentsv1alpha1.StepEvent{
+							Type:      "message",
+							Timestamp: event.Ts,
+							Content:   text,
+						})
 					}
 				}
 			}
 
 		case "tool_execution_end":
 			toolCalls++
+			// Extract tool call details
+			stepEvent := agentsv1alpha1.StepEvent{
+				Type:      "tool_call",
+				Timestamp: event.Ts,
+			}
+			if event.Data != nil {
+				if name, ok := event.Data["toolName"].(string); ok {
+					stepEvent.ToolName = name
+				}
+				// Serialize result as JSON string (can be any type)
+				if result, ok := event.Data["result"]; ok {
+					if resultBytes, err := json.Marshal(result); err == nil {
+						stepEvent.ToolResult = string(resultBytes)
+					}
+				}
+				// Extract duration if present
+				if dur, ok := event.Data["duration"].(float64); ok {
+					stepEvent.Duration = int64(dur)
+				}
+			}
+			events = append(events, stepEvent)
 
 		case "agent_end":
 			// Try to extract token usage from agent_end messages
@@ -680,15 +733,29 @@ func parsePiRunnerLogs(reader interface{ Read([]byte) (int, error) }) (output st
 					tokensUsed = extractTokenUsage(msgs)
 				}
 			}
+
+		case "error":
+			// Capture errors as events
+			if event.Data != nil {
+				errMsg := ""
+				if msg, ok := event.Data["message"].(string); ok {
+					errMsg = msg
+				}
+				events = append(events, agentsv1alpha1.StepEvent{
+					Type:      "error",
+					Timestamp: event.Ts,
+					Content:   errMsg,
+				})
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", 0, 0, fmt.Errorf("error reading log stream: %w", err)
+		return "", 0, 0, nil, fmt.Errorf("error reading log stream: %w", err)
 	}
 
 	output = strings.Join(messages, "\n")
-	return output, toolCalls, tokensUsed, nil
+	return output, toolCalls, tokensUsed, events, nil
 }
 
 // extractTextFromMessage extracts text content from an agent message object.

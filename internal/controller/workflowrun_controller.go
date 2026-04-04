@@ -29,6 +29,12 @@ type WorkflowRunReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	HTTPClient *http.Client
+
+	// CallbackBaseURL is the base URL for the pi-runner callback endpoint.
+	// Pi-runner Jobs POST events to {CallbackBaseURL}/{namespace}/{run}/{step}.
+	// Typically: "http://<operator-webhook-service>.<namespace>.svc.cluster.local:9090/callback"
+	// If empty, callback tracing is disabled and events are only collected from logs.
+	CallbackBaseURL string
 }
 
 // +kubebuilder:rbac:groups=agents.io,resources=workflowruns,verbs=get;list;watch;create;update;patch;delete

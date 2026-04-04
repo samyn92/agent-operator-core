@@ -98,6 +98,43 @@ function fatal(message: string): never {
 }
 
 // =============================================================================
+// CALLBACK CLIENT
+// =============================================================================
+
+/**
+ * Callback client for sending real-time events to the operator.
+ * If CALLBACK_URL is set, events are POSTed to the operator's callback endpoint
+ * in a fire-and-forget manner (non-blocking, failures are logged but don't crash).
+ */
+const callbackUrl = process.env["CALLBACK_URL"];
+
+/**
+ * POST a StepEvent to the operator callback endpoint.
+ * Fire-and-forget: does not block, logs errors to stderr.
+ */
+function sendCallback(event: {
+  type: string;
+  ts: number;
+  toolName?: string;
+  toolArgs?: string;
+  toolResult?: string;
+  duration?: number;
+  content?: string;
+}): void {
+  if (!callbackUrl) return;
+
+  // Fire-and-forget — use .catch to suppress unhandled rejection
+  fetch(callbackUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(event),
+    signal: AbortSignal.timeout(5000), // 5s timeout per event
+  }).catch((err) => {
+    log(`Callback failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+// =============================================================================
 // AGENT MODULE LOADING
 // =============================================================================
 
@@ -279,6 +316,13 @@ async function main(): Promise<void> {
   log("Starting pi-runner");
   emit("runner_start");
 
+  // Log callback configuration
+  if (callbackUrl) {
+    log(`Callback URL: ${callbackUrl}`);
+  } else {
+    log("No CALLBACK_URL set — real-time tracing disabled");
+  }
+
   // 0. Configure git HTTPS auth (before anything that might use git)
   await configureGitAuth();
 
@@ -370,32 +414,53 @@ async function main(): Promise<void> {
     // Forward all events as JSONL
     emit(event.type, eventToData(event));
 
-    // Collect results for the output file
+    // Collect results for the output file + send callback events
     switch (event.type) {
       case "message_end": {
         // Extract text content from the agent message
         const msg = event.message;
+        let extractedText = "";
         if (msg && "content" in msg) {
           const content = msg.content;
           if (typeof content === "string") {
-            result.messages.push(content);
+            extractedText = content;
           } else if (Array.isArray(content)) {
-            const text = content
+            extractedText = content
               .filter((c): c is { type: "text"; text: string } => typeof c === "object" && c !== null && "type" in c && c.type === "text")
               .map((c) => c.text)
               .join("");
-            if (text) result.messages.push(text);
           }
+        }
+        if (extractedText) {
+          result.messages.push(extractedText);
+          sendCallback({
+            type: "message",
+            ts: Date.now(),
+            content: extractedText,
+          });
         }
         break;
       }
-      case "tool_execution_end":
+      case "tool_execution_end": {
         result.toolCalls.push({
           name: event.toolName,
           args: undefined, // args not available in tool_execution_end
           result: event.result,
         });
+        // Send tool call callback with result serialized as JSON string
+        let toolResultStr = "";
+        try {
+          toolResultStr = typeof event.result === "string" ? event.result : JSON.stringify(event.result);
+        } catch { toolResultStr = String(event.result); }
+
+        sendCallback({
+          type: "tool_call",
+          ts: Date.now(),
+          toolName: event.toolName,
+          toolResult: toolResultStr,
+        });
         break;
+      }
       case "agent_end": {
         // Sum up token usage from all assistant messages
         const msgs = event.messages ?? [];
@@ -423,6 +488,11 @@ async function main(): Promise<void> {
     result.success = false;
     result.error = errorMessage;
     emit("error", { message: errorMessage });
+    sendCallback({
+      type: "error",
+      ts: Date.now(),
+      content: errorMessage,
+    });
     log(`Agent execution failed: ${errorMessage}`);
   }
 

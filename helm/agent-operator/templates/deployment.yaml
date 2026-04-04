@@ -41,6 +41,9 @@ spec:
             - --leader-elect={{ .Values.leaderElect }}
             - --webhook-bind-address=:{{ .Values.webhook.port }}
             - --namespace={{ .Release.Namespace }}
+            {{- if .Values.webhook.enabled }}
+            - --callback-base-url=http://{{ include "agent-operator.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.webhook.service.port }}/callback
+            {{- end }}
           ports:
             - name: health
               containerPort: 8081

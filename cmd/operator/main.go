@@ -33,12 +33,14 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var webhookAddr string
+	var callbackBaseURL string
 	var watchNamespace string
 	var enableLeaderElection bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&webhookAddr, "webhook-bind-address", ":9090", "The address the webhook server binds to.")
+	flag.StringVar(&callbackBaseURL, "callback-base-url", "", "Base URL for pi-runner callback events (e.g. http://agent-operator-webhook.agents.svc.cluster.local:9090/callback). If empty, tracing is disabled.")
 	flag.StringVar(&watchNamespace, "namespace", "", "The namespace to watch. If empty, watches all namespaces.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 
@@ -88,8 +90,9 @@ func main() {
 	}
 
 	if err = (&controller.WorkflowRunReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		CallbackBaseURL: callbackBaseURL,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkflowRun")
 		os.Exit(1)
@@ -131,11 +134,13 @@ func main() {
 	// Start webhook server if address is specified
 	if webhookAddr != "" && webhookAddr != "0" {
 		webhookServer := webhook.NewServer(mgr.GetClient(), "")
+		callbackHandler := webhook.NewCallbackHandler(mgr.GetClient())
 		go func() {
 			setupLog.Info("starting webhook server", "addr", webhookAddr)
 			mux := http.NewServeMux()
 			mux.Handle("/webhook/", http.StripPrefix("/webhook", webhookServer))
 			mux.Handle("/webhook", webhookServer)
+			mux.Handle("/callback/", http.StripPrefix("/callback", callbackHandler))
 			mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})

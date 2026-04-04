@@ -380,6 +380,37 @@ type WorkflowRunStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
+// StepEvent represents a single event during step execution (tool call, message, error).
+// These are reported in real-time by the pi-runner via callback to the operator.
+type StepEvent struct {
+	// Type is the event kind: tool_call, message, error, thinking
+	// +kubebuilder:validation:Enum=tool_call;message;error;thinking
+	Type string `json:"type"`
+
+	// Timestamp is when the event occurred (Unix millis)
+	Timestamp int64 `json:"ts"`
+
+	// ToolName is the tool that was called (for tool_call events)
+	// +optional
+	ToolName string `json:"toolName,omitempty"`
+
+	// ToolArgs is a JSON string of the tool call arguments (for tool_call events)
+	// +optional
+	ToolArgs string `json:"toolArgs,omitempty"`
+
+	// ToolResult is a JSON string of the tool call result (for tool_call events)
+	// +optional
+	ToolResult string `json:"toolResult,omitempty"`
+
+	// Duration is how long the event took in milliseconds (for tool_call events)
+	// +optional
+	Duration int64 `json:"duration,omitempty"`
+
+	// Content is the text content (for message events) or error message (for error events)
+	// +optional
+	Content string `json:"content,omitempty"`
+}
+
 // StepResult contains the result of a workflow step
 type StepResult struct {
 	// Name is the step name
@@ -428,6 +459,11 @@ type StepResult struct {
 	// TokensUsed is the total tokens consumed during this step (Pi runtime only)
 	// +optional
 	TokensUsed int `json:"tokensUsed,omitempty"`
+
+	// Events contains real-time trace events from the pi-runner (tool calls, messages, errors).
+	// Populated via callback during execution.
+	// +optional
+	Events []StepEvent `json:"events,omitempty"`
 }
 
 // +kubebuilder:object:root=true
