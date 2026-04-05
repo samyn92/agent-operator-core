@@ -10,7 +10,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
-	"github.com/samyn92/agent-operator-core/internal/resources"
 )
 
 // =============================================================================
@@ -283,18 +282,18 @@ func TestResolveCapabilities_ContainerType(t *testing.T) {
 		t.Fatalf("resolve failed: %s", err)
 	}
 
-	if len(resolved.Sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar, got %d", len(resolved.Sidecars))
+	// Container capabilities are silently skipped — all resolution maps should be empty
+	if len(resolved.MCPEntries) != 0 {
+		t.Fatalf("expected 0 MCP entries, got %d", len(resolved.MCPEntries))
 	}
-	if resolved.Sidecars[0].Name != "kubectl-readonly" {
-		t.Fatalf("expected sidecar name kubectl-readonly, got %s", resolved.Sidecars[0].Name)
+	if len(resolved.SkillFiles) != 0 {
+		t.Fatalf("expected 0 skill files, got %d", len(resolved.SkillFiles))
 	}
-	if resolved.Sidecars[0].Port != int32(resources.SidecarBasePort) {
-		t.Fatalf("expected port %d, got %d", resources.SidecarBasePort, resolved.Sidecars[0].Port)
+	if len(resolved.PluginFiles) != 0 {
+		t.Fatalf("expected 0 plugin files, got %d", len(resolved.PluginFiles))
 	}
-
-	if len(resolved.Sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(resolved.Sources))
+	if len(resolved.PluginPackages) != 0 {
+		t.Fatalf("expected 0 plugin packages, got %d", len(resolved.PluginPackages))
 	}
 }
 
@@ -335,8 +334,18 @@ func TestResolveCapabilities_ContainerTypeWithAlias(t *testing.T) {
 		t.Fatalf("resolve failed: %s", err)
 	}
 
-	if resolved.Sidecars[0].Name != "k8s" {
-		t.Fatalf("expected alias 'k8s', got %s", resolved.Sidecars[0].Name)
+	// Container capabilities are silently skipped — all resolution maps should be empty
+	if len(resolved.MCPEntries) != 0 {
+		t.Fatalf("expected 0 MCP entries, got %d", len(resolved.MCPEntries))
+	}
+	if len(resolved.SkillFiles) != 0 {
+		t.Fatalf("expected 0 skill files, got %d", len(resolved.SkillFiles))
+	}
+	if len(resolved.PluginFiles) != 0 {
+		t.Fatalf("expected 0 plugin files, got %d", len(resolved.PluginFiles))
+	}
+	if len(resolved.PluginPackages) != 0 {
+		t.Fatalf("expected 0 plugin packages, got %d", len(resolved.PluginPackages))
 	}
 }
 
@@ -376,11 +385,6 @@ func TestResolveCapabilities_MCPType(t *testing.T) {
 	resolved, err := r.resolveCapabilities(context.Background(), agent)
 	if err != nil {
 		t.Fatalf("resolve failed: %s", err)
-	}
-
-	// Should have no sidecars (MCP is not a sidecar)
-	if len(resolved.Sidecars) != 0 {
-		t.Fatalf("expected 0 sidecars for MCP, got %d", len(resolved.Sidecars))
 	}
 
 	// Should have 1 MCP entry
@@ -494,100 +498,6 @@ func TestResolveCapabilities_SkillType_ConfigMapRef(t *testing.T) {
 	content := resolved.SkillFiles["skill-review"]
 	if content != "# Code Review Skill\nReview checklist..." {
 		t.Fatalf("unexpected content from configmap: %s", content)
-	}
-}
-
-func TestResolveCapabilities_ToolType_InlineCode(t *testing.T) {
-	scheme := newTestScheme()
-
-	cap := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "tool-health", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Health check",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				Code: `import { tool } from "@opencode-ai/plugin"; export default tool({...})`,
-			},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
-	}
-
-	agent := &agentsv1alpha1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec: agentsv1alpha1.AgentSpec{
-			Model: "test-model",
-			CapabilityRefs: []agentsv1alpha1.CapabilityRef{
-				{Name: "tool-health"},
-			},
-		},
-	}
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cap, agent).
-		Build()
-
-	r := &AgentReconciler{Client: client, Scheme: scheme}
-
-	resolved, err := r.resolveCapabilities(context.Background(), agent)
-	if err != nil {
-		t.Fatalf("resolve failed: %s", err)
-	}
-
-	if len(resolved.ToolFiles) != 1 {
-		t.Fatalf("expected 1 tool file, got %d", len(resolved.ToolFiles))
-	}
-}
-
-func TestResolveCapabilities_ToolType_ConfigMapRef(t *testing.T) {
-	scheme := newTestScheme()
-
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "tool-cm", Namespace: "default"},
-		Data: map[string]string{
-			"tool.ts": `import { tool } from "@opencode-ai/plugin"; export default tool({name: "test"})`,
-		},
-	}
-
-	cap := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "tool-from-cm", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Tool from ConfigMap",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				ConfigMapRef: &agentsv1alpha1.ConfigMapKeyRef{
-					Name: "tool-cm",
-					Key:  "tool.ts",
-				},
-			},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
-	}
-
-	agent := &agentsv1alpha1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec: agentsv1alpha1.AgentSpec{
-			Model: "test-model",
-			CapabilityRefs: []agentsv1alpha1.CapabilityRef{
-				{Name: "tool-from-cm"},
-			},
-		},
-	}
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cm, cap, agent).
-		Build()
-
-	r := &AgentReconciler{Client: client, Scheme: scheme}
-
-	resolved, err := r.resolveCapabilities(context.Background(), agent)
-	if err != nil {
-		t.Fatalf("resolve failed: %s", err)
-	}
-
-	if len(resolved.ToolFiles) != 1 {
-		t.Fatalf("expected 1 tool file, got %d", len(resolved.ToolFiles))
 	}
 }
 
@@ -730,84 +640,23 @@ func TestResolveCapabilities_SkipsNotReadyCapabilities(t *testing.T) {
 		t.Fatalf("resolve failed: %s", err)
 	}
 
-	// Only ready-cap should be resolved
-	if len(resolved.Sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar (only ready), got %d", len(resolved.Sidecars))
+	// Container capabilities are silently skipped regardless of readiness —
+	// all resolution maps should be empty since both caps are Container type
+	if len(resolved.MCPEntries) != 0 {
+		t.Fatalf("expected 0 MCP entries, got %d", len(resolved.MCPEntries))
 	}
-	if resolved.Sidecars[0].Name != "ready-cap" {
-		t.Fatalf("expected ready-cap, got %s", resolved.Sidecars[0].Name)
+	if len(resolved.SkillFiles) != 0 {
+		t.Fatalf("expected 0 skill files, got %d", len(resolved.SkillFiles))
 	}
-}
-
-func TestResolveCapabilities_MultipleContainerPorts(t *testing.T) {
-	scheme := newTestScheme()
-
-	cap1 := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "cap-1", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type: agentsv1alpha1.CapabilityTypeContainer, Description: "Cap 1",
-			Container: &agentsv1alpha1.ContainerCapabilitySpec{Image: "test:1"},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
+	if len(resolved.PluginFiles) != 0 {
+		t.Fatalf("expected 0 plugin files, got %d", len(resolved.PluginFiles))
 	}
-
-	cap2 := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "cap-2", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type: agentsv1alpha1.CapabilityTypeContainer, Description: "Cap 2",
-			Container: &agentsv1alpha1.ContainerCapabilitySpec{Image: "test:2"},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
-	}
-
-	cap3 := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "cap-3", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type: agentsv1alpha1.CapabilityTypeContainer, Description: "Cap 3",
-			Container: &agentsv1alpha1.ContainerCapabilitySpec{Image: "test:3"},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
-	}
-
-	agent := &agentsv1alpha1.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-agent", Namespace: "default"},
-		Spec: agentsv1alpha1.AgentSpec{
-			Model: "test-model",
-			CapabilityRefs: []agentsv1alpha1.CapabilityRef{
-				{Name: "cap-1"},
-				{Name: "cap-2"},
-				{Name: "cap-3"},
-			},
-		},
-	}
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cap1, cap2, cap3, agent).
-		Build()
-
-	r := &AgentReconciler{Client: client, Scheme: scheme}
-
-	resolved, err := r.resolveCapabilities(context.Background(), agent)
-	if err != nil {
-		t.Fatalf("resolve failed: %s", err)
-	}
-
-	if len(resolved.Sidecars) != 3 {
-		t.Fatalf("expected 3 sidecars, got %d", len(resolved.Sidecars))
-	}
-
-	// Verify sequential port assignment
-	basePort := int32(resources.SidecarBasePort)
-	for i, sidecar := range resolved.Sidecars {
-		expectedPort := basePort + int32(i)
-		if sidecar.Port != expectedPort {
-			t.Fatalf("sidecar %d: expected port %d, got %d", i, expectedPort, sidecar.Port)
-		}
+	if len(resolved.PluginPackages) != 0 {
+		t.Fatalf("expected 0 plugin packages, got %d", len(resolved.PluginPackages))
 	}
 }
 
-func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
+func TestResolveCapabilities_AllRemainingTypes(t *testing.T) {
 	scheme := newTestScheme()
 
 	containerCap := &agentsv1alpha1.Capability{
@@ -837,15 +686,6 @@ func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
 		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
 	}
 
-	toolCap := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{Name: "tool-cap", Namespace: "default"},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type: agentsv1alpha1.CapabilityTypeTool, Description: "Tool",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{Code: "export default tool({...})"},
-		},
-		Status: agentsv1alpha1.CapabilityStatus{Phase: agentsv1alpha1.CapabilityPhaseReady},
-	}
-
 	pluginCap := &agentsv1alpha1.Capability{
 		ObjectMeta: metav1.ObjectMeta{Name: "plugin-cap", Namespace: "default"},
 		Spec: agentsv1alpha1.CapabilitySpec{
@@ -863,7 +703,6 @@ func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
 				{Name: "container-cap"},
 				{Name: "mcp-cap", Alias: "my-mcp"},
 				{Name: "skill-cap", Alias: "my-skill"},
-				{Name: "tool-cap", Alias: "my-tool"},
 				{Name: "plugin-cap", Alias: "my-plugin"},
 			},
 		},
@@ -871,7 +710,7 @@ func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
 
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(containerCap, mcpCap, skillCap, toolCap, pluginCap, agent).
+		WithObjects(containerCap, mcpCap, skillCap, pluginCap, agent).
 		Build()
 
 	r := &AgentReconciler{Client: client, Scheme: scheme}
@@ -881,13 +720,7 @@ func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
 		t.Fatalf("resolve failed: %s", err)
 	}
 
-	// Verify all 5 types resolved correctly
-	if len(resolved.Sidecars) != 1 {
-		t.Fatalf("expected 1 sidecar, got %d", len(resolved.Sidecars))
-	}
-	if len(resolved.Sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(resolved.Sources))
-	}
+	// Container cap is silently skipped — verify MCP, Skill, Plugin still resolve
 	if len(resolved.MCPEntries) != 1 {
 		t.Fatalf("expected 1 MCP entry, got %d", len(resolved.MCPEntries))
 	}
@@ -900,14 +733,11 @@ func TestResolveCapabilities_AllFiveTypes(t *testing.T) {
 	if _, ok := resolved.SkillFiles["my-skill"]; !ok {
 		t.Fatal("expected skill file with alias 'my-skill'")
 	}
-	if len(resolved.ToolFiles) != 1 {
-		t.Fatalf("expected 1 tool file, got %d", len(resolved.ToolFiles))
-	}
-	if _, ok := resolved.ToolFiles["my-tool"]; !ok {
-		t.Fatal("expected tool file with alias 'my-tool'")
-	}
 	if len(resolved.PluginPackages) != 1 {
 		t.Fatalf("expected 1 plugin package, got %d", len(resolved.PluginPackages))
+	}
+	if len(resolved.PluginFiles) != 0 {
+		t.Fatalf("expected 0 plugin files, got %d", len(resolved.PluginFiles))
 	}
 }
 
@@ -937,7 +767,7 @@ func TestResolveCapabilities_SkipsMissingCapability(t *testing.T) {
 	}
 
 	// Should have empty resolved
-	if len(resolved.Sidecars) != 0 || len(resolved.MCPEntries) != 0 || len(resolved.SkillFiles) != 0 || len(resolved.ToolFiles) != 0 || len(resolved.PluginFiles) != 0 || len(resolved.PluginPackages) != 0 {
+	if len(resolved.MCPEntries) != 0 || len(resolved.SkillFiles) != 0 || len(resolved.PluginFiles) != 0 || len(resolved.PluginPackages) != 0 {
 		t.Fatal("expected empty resolved for missing capability")
 	}
 }

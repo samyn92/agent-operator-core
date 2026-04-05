@@ -1,7 +1,6 @@
 package resources
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -35,25 +34,6 @@ func newTestAgent(name, namespace string) *agentsv1alpha1.Agent {
 	}
 }
 
-func newTestSidecar(name string, port int32, image string) CapabilitySidecarInfo {
-	return CapabilitySidecarInfo{
-		Name: name,
-		Capability: &agentsv1alpha1.Capability{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Spec: agentsv1alpha1.CapabilitySpec{
-				Type:        agentsv1alpha1.CapabilityTypeContainer,
-				Description: fmt.Sprintf("Test capability %s", name),
-				Container: &agentsv1alpha1.ContainerCapabilitySpec{
-					Image:         image,
-					CommandPrefix: name + " ",
-				},
-			},
-		},
-		Port:          port,
-		ConfigMapName: fmt.Sprintf("my-agent-%s-config", name),
-	}
-}
-
 // =============================================================================
 // getImageConfig TESTS
 // =============================================================================
@@ -61,16 +41,13 @@ func newTestSidecar(name string, port int32, image string) CapabilitySidecarInfo
 func TestGetImageConfig_Defaults(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	image, initImg, gwImg, policy := getImageConfig(agent)
+	image, initImg, policy := getImageConfig(agent)
 
 	if image != DefaultOpencodeImage {
 		t.Fatalf("expected default image %q, got %q", DefaultOpencodeImage, image)
 	}
 	if initImg != DefaultOpencodeImage {
 		t.Fatalf("expected default init image to match opencode image %q, got %q", DefaultOpencodeImage, initImg)
-	}
-	if gwImg != DefaultGatewayImage {
-		t.Fatalf("expected default gateway image %q, got %q", DefaultGatewayImage, gwImg)
 	}
 	if policy != corev1.PullIfNotPresent {
 		t.Fatalf("expected PullIfNotPresent, got %v", policy)
@@ -83,7 +60,7 @@ func TestGetImageConfig_CustomImage(t *testing.T) {
 		OpenCode: "my-registry/opencode:v1.0",
 	}
 
-	image, initImg, _, policy := getImageConfig(agent)
+	image, initImg, policy := getImageConfig(agent)
 
 	if image != "my-registry/opencode:v1.0" {
 		t.Fatalf("expected custom image, got %q", image)
@@ -104,7 +81,7 @@ func TestGetImageConfig_CustomInitImage(t *testing.T) {
 		Init:     "my-registry/busybox:1.36",
 	}
 
-	_, initImg, _, _ := getImageConfig(agent)
+	_, initImg, _ := getImageConfig(agent)
 
 	// Explicit init image override should be respected
 	if initImg != "my-registry/busybox:1.36" {
@@ -119,7 +96,7 @@ func TestGetImageConfig_CustomPullPolicy(t *testing.T) {
 		PullPolicy: corev1.PullAlways,
 	}
 
-	image, _, _, policy := getImageConfig(agent)
+	image, _, policy := getImageConfig(agent)
 
 	if image != "my-registry/opencode:latest" {
 		t.Fatalf("expected custom image, got %q", image)
@@ -130,83 +107,13 @@ func TestGetImageConfig_CustomPullPolicy(t *testing.T) {
 }
 
 // =============================================================================
-// getServiceAccountName TESTS
-// =============================================================================
-
-func TestGetServiceAccountName_NoSidecars(t *testing.T) {
-	sa := getServiceAccountName(nil)
-	if sa != "" {
-		t.Fatalf("expected empty SA for nil sidecars, got %q", sa)
-	}
-}
-
-func TestGetServiceAccountName_NoSASpecified(t *testing.T) {
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-	}
-
-	sa := getServiceAccountName(sidecars)
-	if sa != "" {
-		t.Fatalf("expected empty SA when none specified, got %q", sa)
-	}
-}
-
-func TestGetServiceAccountName_FirstSidecarWithSA(t *testing.T) {
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-		newTestSidecar("helm", 8082, "alpine/helm:3.14"),
-	}
-	sidecars[0].Capability.Spec.Container.ServiceAccountName = "kubectl-sa"
-	sidecars[1].Capability.Spec.Container.ServiceAccountName = "helm-sa"
-
-	sa := getServiceAccountName(sidecars)
-	if sa != "kubectl-sa" {
-		t.Fatalf("expected first SA 'kubectl-sa', got %q", sa)
-	}
-}
-
-func TestGetServiceAccountName_SkipsEmptySA(t *testing.T) {
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("gh", 8081, "ghcr.io/cli/cli:latest"),
-		newTestSidecar("kubectl", 8082, "bitnami/kubectl:1.30"),
-	}
-	// gh has no SA, kubectl does
-	sidecars[1].Capability.Spec.Container.ServiceAccountName = "kubectl-sa"
-
-	sa := getServiceAccountName(sidecars)
-	if sa != "kubectl-sa" {
-		t.Fatalf("expected 'kubectl-sa', got %q", sa)
-	}
-}
-
-func TestGetServiceAccountName_NilContainerSpec(t *testing.T) {
-	sidecars := []CapabilitySidecarInfo{
-		{
-			Name: "mcp-cap",
-			Capability: &agentsv1alpha1.Capability{
-				Spec: agentsv1alpha1.CapabilitySpec{
-					Type: agentsv1alpha1.CapabilityTypeMCP,
-					// No Container spec
-				},
-			},
-			Port: 8081,
-		},
-	}
-
-	sa := getServiceAccountName(sidecars)
-	if sa != "" {
-		t.Fatalf("expected empty SA for non-container capability, got %q", sa)
-	}
-}
-
-// =============================================================================
 // AgentDeployment TESTS
 // =============================================================================
 
 func TestAgentDeployment_BasicStructure(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Name != "my-agent" {
 		t.Fatalf("expected name 'my-agent', got %q", dep.Name)
@@ -222,7 +129,7 @@ func TestAgentDeployment_BasicStructure(t *testing.T) {
 func TestAgentDeployment_Labels(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	labels := dep.Labels
 	if labels["app.kubernetes.io/name"] != "agent" {
@@ -245,7 +152,7 @@ func TestAgentDeployment_NoConfigMapHashAnnotation(t *testing.T) {
 	// Kubernetes ConfigMap volume updates and symlinks, not rolling restarts.
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	podAnnotations := dep.Spec.Template.Annotations
 	if _, ok := podAnnotations[ConfigMapHashAnnotation]; ok {
@@ -257,7 +164,7 @@ func TestAgentDeployment_MCPCapabilityHashAnnotation(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
 	// With an MCP hash, the annotation should be present on the pod template
-	dep := AgentDeployment(agent, "", "abc123def456", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "abc123def456", nil, nil)
 
 	podAnnotations := dep.Spec.Template.Annotations
 	hash, ok := podAnnotations[MCPCapabilityHashAnnotation]
@@ -273,7 +180,7 @@ func TestAgentDeployment_NoMCPCapabilityHashAnnotation(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
 	// Without an MCP hash, the annotation should not be present
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	podAnnotations := dep.Spec.Template.Annotations
 	if _, ok := podAnnotations[MCPCapabilityHashAnnotation]; ok {
@@ -286,8 +193,8 @@ func TestAgentDeployment_MCPCapabilityHashChangesSpecHash(t *testing.T) {
 
 	// Different MCP hashes should produce different deployment spec hashes,
 	// which triggers a rolling restart when MCP capabilities change.
-	dep1 := AgentDeployment(agent, "", "hash-v1", nil, nil, nil)
-	dep2 := AgentDeployment(agent, "", "hash-v2", nil, nil, nil)
+	dep1 := AgentDeployment(agent, "", "hash-v1", nil, nil)
+	dep2 := AgentDeployment(agent, "", "hash-v2", nil, nil)
 
 	hash1 := dep1.Annotations[DesiredSpecHashAnnotation]
 	hash2 := dep2.Annotations[DesiredSpecHashAnnotation]
@@ -300,7 +207,7 @@ func TestAgentDeployment_MCPCapabilityHashChangesSpecHash(t *testing.T) {
 func TestAgentDeployment_DesiredSpecHashAnnotation(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Annotations == nil {
 		t.Fatal("expected deployment annotations")
@@ -317,7 +224,7 @@ func TestAgentDeployment_DesiredSpecHashAnnotation(t *testing.T) {
 func TestAgentDeployment_MainContainerBasics(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	containers := dep.Spec.Template.Spec.Containers
 	if len(containers) < 1 {
@@ -338,7 +245,7 @@ func TestAgentDeployment_MainContainerBasics(t *testing.T) {
 func TestAgentDeployment_MainContainerArgs(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -361,7 +268,7 @@ func TestAgentDeployment_LoggingArgs(t *testing.T) {
 		Enabled: &enabled,
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -380,7 +287,7 @@ func TestAgentDeployment_LoggingDisabled(t *testing.T) {
 		Enabled: &disabled,
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	args := strings.Join(main.Args, " ")
@@ -392,7 +299,7 @@ func TestAgentDeployment_LoggingDisabled(t *testing.T) {
 func TestAgentDeployment_MainContainerEnvVars(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	envMap := make(map[string]corev1.EnvVar)
@@ -433,7 +340,7 @@ func TestAgentDeployment_AdditionalProviderEnvVars(t *testing.T) {
 		},
 	})
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	var found bool
@@ -458,7 +365,7 @@ func TestAgentDeployment_ProviderWithNoAPIKey(t *testing.T) {
 		APIKeySecret: nil,
 	})
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	for _, e := range main.Env {
@@ -471,7 +378,7 @@ func TestAgentDeployment_ProviderWithNoAPIKey(t *testing.T) {
 func TestAgentDeployment_DefaultResources(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	memReq := main.Resources.Requests[corev1.ResourceMemory]
@@ -500,7 +407,7 @@ func TestAgentDeployment_CustomResources(t *testing.T) {
 		},
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	memReq := main.Resources.Requests[corev1.ResourceMemory]
@@ -512,7 +419,7 @@ func TestAgentDeployment_CustomResources(t *testing.T) {
 func TestAgentDeployment_MainContainerPorts(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if len(main.Ports) != 1 {
@@ -529,7 +436,7 @@ func TestAgentDeployment_MainContainerPorts(t *testing.T) {
 func TestAgentDeployment_MainContainerProbes(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if main.ReadinessProbe == nil {
@@ -558,82 +465,10 @@ func TestAgentDeployment_MainContainerProbes(t *testing.T) {
 	}
 }
 
-func TestAgentDeployment_WithSidecars(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-		newTestSidecar("gh", 8082, "ghcr.io/cli/cli:latest"),
-	}
-
-	dep := AgentDeployment(agent, "", "", sidecars, nil, nil)
-
-	// 1 main + 2 sidecars = 3 containers
-	containers := dep.Spec.Template.Spec.Containers
-	if len(containers) != 3 {
-		t.Fatalf("expected 3 containers, got %d", len(containers))
-	}
-	if containers[0].Name != "opencode" {
-		t.Fatalf("first container should be opencode, got %q", containers[0].Name)
-	}
-	if containers[1].Name != "kubectl" {
-		t.Fatalf("second container should be kubectl, got %q", containers[1].Name)
-	}
-	if containers[2].Name != "gh" {
-		t.Fatalf("third container should be gh, got %q", containers[2].Name)
-	}
-}
-
-func TestAgentDeployment_SidecarConfigMapVolumes(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-	}
-
-	dep := AgentDeployment(agent, "", "", sidecars, nil, nil)
-
-	volumes := dep.Spec.Template.Spec.Volumes
-	var found bool
-	for _, v := range volumes {
-		if v.Name == "config-kubectl" {
-			found = true
-			if v.ConfigMap.Name != "my-agent-kubectl-config" {
-				t.Fatalf("expected configmap name 'my-agent-kubectl-config', got %q", v.ConfigMap.Name)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("expected config-kubectl volume")
-	}
-}
-
-func TestAgentDeployment_ServiceAccountFromSidecars(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-	}
-	sidecars[0].Capability.Spec.Container.ServiceAccountName = "kubectl-sa"
-
-	dep := AgentDeployment(agent, "", "", sidecars, nil, nil)
-
-	if dep.Spec.Template.Spec.ServiceAccountName != "kubectl-sa" {
-		t.Fatalf("expected SA 'kubectl-sa', got %q", dep.Spec.Template.Spec.ServiceAccountName)
-	}
-}
-
-func TestAgentDeployment_NoServiceAccountWithoutSidecars(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
-
-	if dep.Spec.Template.Spec.ServiceAccountName != "" {
-		t.Fatalf("expected empty SA without sidecars, got %q", dep.Spec.Template.Spec.ServiceAccountName)
-	}
-}
-
 func TestAgentDeployment_InitContainer(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	initContainers := dep.Spec.Template.Spec.InitContainers
 	if len(initContainers) != 1 {
@@ -655,7 +490,7 @@ func TestAgentDeployment_CustomImage(t *testing.T) {
 		PullPolicy: corev1.PullAlways,
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	if main.Image != "custom/opencode:v2" {
@@ -672,7 +507,7 @@ func TestAgentDeployment_AdditionalVolumeMounts(t *testing.T) {
 		{Name: "extra", MountPath: "/extra"},
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	main := dep.Spec.Template.Spec.Containers[0]
 	var found bool
@@ -683,360 +518,6 @@ func TestAgentDeployment_AdditionalVolumeMounts(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected additional volume mount '/extra'")
-	}
-}
-
-// =============================================================================
-// buildCapabilitySidecarContainer TESTS
-// =============================================================================
-
-func TestSidecarContainer_BasicEnvVars(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	sidecar.Capability.Spec.Container.ContainerType = "kubernetes"
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	envMap := make(map[string]string)
-	for _, e := range c.Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		}
-	}
-
-	if envMap["TOOL_PORT"] != "8081" {
-		t.Fatalf("expected TOOL_PORT=8081, got %q", envMap["TOOL_PORT"])
-	}
-	if envMap["TOOL_NAME"] != "kubectl" {
-		t.Fatalf("expected TOOL_NAME=kubectl, got %q", envMap["TOOL_NAME"])
-	}
-	if envMap["SOURCE_TYPE"] != "kubernetes" {
-		t.Fatalf("expected SOURCE_TYPE=kubernetes, got %q", envMap["SOURCE_TYPE"])
-	}
-	if envMap["WORKSPACE_PATH"] != "/data/workspace" {
-		t.Fatalf("expected WORKSPACE_PATH=/data/workspace, got %q", envMap["WORKSPACE_PATH"])
-	}
-}
-
-func TestSidecarContainer_NoSourceType(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("custom", 8081, "custom:latest")
-	sidecar.Capability.Spec.Container.ContainerType = "" // no type
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	for _, e := range c.Env {
-		if e.Name == "SOURCE_TYPE" {
-			t.Fatal("should not have SOURCE_TYPE when containerType is empty")
-		}
-	}
-}
-
-func TestSidecarContainer_AuditEnabled(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	sidecar.Capability.Spec.Audit = true
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	envMap := make(map[string]string)
-	for _, e := range c.Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		}
-	}
-
-	if envMap["AUDIT_ENABLED"] != "true" {
-		t.Fatal("expected AUDIT_ENABLED=true")
-	}
-	if envMap["AUDIT_LOG_COMMANDS"] != "true" {
-		t.Fatal("expected AUDIT_LOG_COMMANDS=true")
-	}
-}
-
-func TestSidecarContainer_AuditDisabled(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	sidecar.Capability.Spec.Audit = false
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	for _, e := range c.Env {
-		if e.Name == "AUDIT_ENABLED" {
-			t.Fatal("should not have AUDIT_ENABLED when audit is false")
-		}
-	}
-}
-
-func TestSidecarContainer_RateLimit(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	sidecar.Capability.Spec.RateLimit = &agentsv1alpha1.CapabilityRateLimit{
-		RequestsPerMinute: 60,
-	}
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	envMap := make(map[string]string)
-	for _, e := range c.Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		}
-	}
-
-	if envMap["RATE_LIMIT_RPM"] != "60" {
-		t.Fatalf("expected RATE_LIMIT_RPM=60, got %q", envMap["RATE_LIMIT_RPM"])
-	}
-}
-
-func TestSidecarContainer_NoRateLimit(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	// No rate limit
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	for _, e := range c.Env {
-		if e.Name == "RATE_LIMIT_RPM" {
-			t.Fatal("should not have RATE_LIMIT_RPM when no rate limit")
-		}
-	}
-}
-
-func TestSidecarContainer_GitAuthorConfig(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("gh", 8081, "ghcr.io/cli/cli:latest")
-	sidecar.Capability.Spec.Container.Config = &agentsv1alpha1.CapabilityConfig{
-		Git: &agentsv1alpha1.GitConfig{
-			Author: &agentsv1alpha1.GitAuthor{
-				Name:  "Agent Bot",
-				Email: "bot@example.com",
-			},
-		},
-	}
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	envMap := make(map[string]string)
-	for _, e := range c.Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		}
-	}
-
-	if envMap["GIT_AUTHOR_NAME"] != "Agent Bot" {
-		t.Fatalf("expected GIT_AUTHOR_NAME='Agent Bot', got %q", envMap["GIT_AUTHOR_NAME"])
-	}
-	if envMap["GIT_AUTHOR_EMAIL"] != "bot@example.com" {
-		t.Fatalf("expected GIT_AUTHOR_EMAIL='bot@example.com', got %q", envMap["GIT_AUTHOR_EMAIL"])
-	}
-	if envMap["GIT_COMMITTER_NAME"] != "Agent Bot" {
-		t.Fatalf("expected GIT_COMMITTER_NAME='Agent Bot', got %q", envMap["GIT_COMMITTER_NAME"])
-	}
-	if envMap["GIT_COMMITTER_EMAIL"] != "bot@example.com" {
-		t.Fatalf("expected GIT_COMMITTER_EMAIL='bot@example.com', got %q", envMap["GIT_COMMITTER_EMAIL"])
-	}
-}
-
-func TestSidecarContainer_GitLabDomain(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("glab", 8081, "registry.gitlab.com/glab:latest")
-	sidecar.Capability.Spec.Container.Config = &agentsv1alpha1.CapabilityConfig{
-		GitLab: &agentsv1alpha1.GitLabConfig{
-			Domain: "gitlab.company.com",
-		},
-	}
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	envMap := make(map[string]string)
-	for _, e := range c.Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		}
-	}
-
-	if envMap["GITLAB_HOST"] != "gitlab.company.com" {
-		t.Fatalf("expected GITLAB_HOST='gitlab.company.com', got %q", envMap["GITLAB_HOST"])
-	}
-}
-
-func TestSidecarContainer_Secrets(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("gh", 8081, "ghcr.io/cli/cli:latest")
-	sidecar.Capability.Spec.Secrets = []agentsv1alpha1.SecretEnvVar{
-		{
-			Name: "GITHUB_TOKEN",
-			ValueFrom: agentsv1alpha1.SecretKeySelector{
-				Name: "github-secret",
-				Key:  "token",
-			},
-		},
-		{
-			Name: "EXTRA_SECRET",
-			ValueFrom: agentsv1alpha1.SecretKeySelector{
-				Name: "extra-secret",
-				Key:  "value",
-			},
-		},
-	}
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	secretEnvs := make(map[string]*corev1.SecretKeySelector)
-	for _, e := range c.Env {
-		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-			secretEnvs[e.Name] = e.ValueFrom.SecretKeyRef
-		}
-	}
-
-	if secretEnvs["GITHUB_TOKEN"] == nil {
-		t.Fatal("expected GITHUB_TOKEN secret env")
-	}
-	if secretEnvs["GITHUB_TOKEN"].Name != "github-secret" {
-		t.Fatalf("expected secret name 'github-secret', got %q", secretEnvs["GITHUB_TOKEN"].Name)
-	}
-	if secretEnvs["EXTRA_SECRET"] == nil {
-		t.Fatal("expected EXTRA_SECRET secret env")
-	}
-}
-
-func TestSidecarContainer_VolumeMounts(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	mountMap := make(map[string]corev1.VolumeMount)
-	for _, vm := range c.VolumeMounts {
-		mountMap[vm.Name] = vm
-	}
-
-	// Config mount
-	configMount := mountMap["config-kubectl"]
-	if configMount.MountPath != "/etc/tool" {
-		t.Fatalf("expected config mount at /etc/tool, got %q", configMount.MountPath)
-	}
-	if !configMount.ReadOnly {
-		t.Fatal("config mount should be read-only")
-	}
-
-	// Data mount
-	dataMount := mountMap["data"]
-	if dataMount.MountPath != "/data" {
-		t.Fatalf("expected data mount at /data, got %q", dataMount.MountPath)
-	}
-}
-
-func TestSidecarContainer_DefaultResources(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	memReq := c.Resources.Requests[corev1.ResourceMemory]
-	if memReq.String() != "64Mi" {
-		t.Fatalf("expected default sidecar memory request 64Mi, got %s", memReq.String())
-	}
-	cpuReq := c.Resources.Requests[corev1.ResourceCPU]
-	if cpuReq.String() != "50m" {
-		t.Fatalf("expected default sidecar CPU request 50m, got %s", cpuReq.String())
-	}
-	memLimit := c.Resources.Limits[corev1.ResourceMemory]
-	if memLimit.String() != "256Mi" {
-		t.Fatalf("expected default sidecar memory limit 256Mi, got %s", memLimit.String())
-	}
-}
-
-func TestSidecarContainer_CustomResources(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-	sidecar.Capability.Spec.Resources = &corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("128Mi"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory: resource.MustParse("512Mi"),
-		},
-	}
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	memReq := c.Resources.Requests[corev1.ResourceMemory]
-	if memReq.String() != "128Mi" {
-		t.Fatalf("expected custom memory request 128Mi, got %s", memReq.String())
-	}
-	memLimit := c.Resources.Limits[corev1.ResourceMemory]
-	if memLimit.String() != "512Mi" {
-		t.Fatalf("expected custom memory limit 512Mi, got %s", memLimit.String())
-	}
-}
-
-func TestSidecarContainer_PortName(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	if c.Ports[0].Name != "kubectl" {
-		t.Fatalf("expected port name 'kubectl', got %q", c.Ports[0].Name)
-	}
-	if c.Ports[0].ContainerPort != 8081 {
-		t.Fatalf("expected port 8081, got %d", c.Ports[0].ContainerPort)
-	}
-}
-
-func TestSidecarContainer_PortNameTruncation(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	// Name > 15 chars
-	sidecar := newTestSidecar("very-long-capability-name", 8083, "image:latest")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	portName := c.Ports[0].Name
-	if len(portName) > 15 {
-		t.Fatalf("port name should be max 15 chars, got %d: %q", len(portName), portName)
-	}
-	expected := "cap-8083"
-	if portName != expected {
-		t.Fatalf("expected truncated port name %q, got %q", expected, portName)
-	}
-}
-
-func TestSidecarContainer_Probes(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	if c.ReadinessProbe == nil {
-		t.Fatal("expected readiness probe")
-	}
-	if c.ReadinessProbe.HTTPGet.Path != "/healthz" {
-		t.Fatalf("expected readiness path '/healthz', got %q", c.ReadinessProbe.HTTPGet.Path)
-	}
-	if c.ReadinessProbe.HTTPGet.Port.IntValue() != 8081 {
-		t.Fatalf("expected readiness port 8081, got %d", c.ReadinessProbe.HTTPGet.Port.IntValue())
-	}
-	if c.LivenessProbe == nil {
-		t.Fatal("expected liveness probe")
-	}
-	if c.LivenessProbe.HTTPGet.Path != "/healthz" {
-		t.Fatalf("expected liveness path '/healthz', got %q", c.LivenessProbe.HTTPGet.Path)
-	}
-}
-
-func TestSidecarContainer_ContainerName(t *testing.T) {
-	agent := newTestAgent("my-agent", "default")
-	sidecar := newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30")
-
-	c := buildCapabilitySidecarContainer(agent, sidecar, corev1.PullIfNotPresent)
-
-	if c.Name != "kubectl" {
-		t.Fatalf("expected container name 'kubectl', got %q", c.Name)
-	}
-	if c.Image != "bitnami/kubectl:1.30" {
-		t.Fatalf("expected image 'bitnami/kubectl:1.30', got %q", c.Image)
 	}
 }
 
@@ -1262,7 +743,7 @@ func TestAgentDeployment_Strategy_RecreateWithPVC(t *testing.T) {
 		Size: resource.MustParse("10Gi"),
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Fatalf("expected Recreate strategy with PVC, got %v", dep.Spec.Strategy.Type)
@@ -1273,7 +754,7 @@ func TestAgentDeployment_Strategy_RollingUpdateWithoutPVC(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 	// No storage = emptyDir
 
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	if dep.Spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
 		t.Fatalf("expected RollingUpdate strategy without PVC, got %v", dep.Spec.Strategy.Type)
@@ -1287,8 +768,8 @@ func TestAgentDeployment_Strategy_RollingUpdateWithoutPVC(t *testing.T) {
 func TestHashDeploymentSpec_Deterministic(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
 
-	dep1 := AgentDeployment(agent, "", "", nil, nil, nil)
-	dep2 := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep1 := AgentDeployment(agent, "", "", nil, nil)
+	dep2 := AgentDeployment(agent, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1302,8 +783,8 @@ func TestHashDeploymentSpec_DifferentSpecs(t *testing.T) {
 	agent1 := newTestAgent("agent-a", "default")
 	agent2 := newTestAgent("agent-b", "default")
 
-	dep1 := AgentDeployment(agent1, "", "", nil, nil, nil)
-	dep2 := AgentDeployment(agent2, "", "", nil, nil, nil)
+	dep1 := AgentDeployment(agent1, "", "", nil, nil)
+	dep2 := AgentDeployment(agent2, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1317,8 +798,8 @@ func TestHashDeploymentSpec_SameInputsSameHash(t *testing.T) {
 	// Without configmap hash in annotations, same agent always produces same spec hash
 	agent := newTestAgent("my-agent", "default")
 
-	dep1 := AgentDeployment(agent, "", "", nil, nil, nil)
-	dep2 := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep1 := AgentDeployment(agent, "", "", nil, nil)
+	dep2 := AgentDeployment(agent, "", "", nil, nil)
 
 	hash1 := HashDeploymentSpec(dep1)
 	hash2 := HashDeploymentSpec(dep2)
@@ -1330,158 +811,12 @@ func TestHashDeploymentSpec_SameInputsSameHash(t *testing.T) {
 
 func TestHashDeploymentSpec_Length(t *testing.T) {
 	agent := newTestAgent("my-agent", "default")
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	hash := HashDeploymentSpec(dep)
 
 	// SHA256 hex = 64 characters
 	if len(hash) != 64 {
 		t.Fatalf("expected 64-char hash, got %d chars: %q", len(hash), hash)
-	}
-}
-
-// =============================================================================
-// INTEGRATION-STYLE TESTS
-// =============================================================================
-
-func TestAgentDeployment_FullStack(t *testing.T) {
-	// Test a realistic deployment with multiple sidecars, custom resources, storage
-	agent := newTestAgent("sre-agent", "production")
-	agent.Spec.Storage = &agentsv1alpha1.StorageConfig{
-		Size: resource.MustParse("20Gi"),
-	}
-	agent.Spec.Images = &agentsv1alpha1.ImagesConfig{
-		OpenCode:   "ghcr.io/anomalyco/opencode:v1.2.0",
-		PullPolicy: corev1.PullAlways,
-	}
-	enabled := true
-	agent.Spec.Logging = &agentsv1alpha1.LoggingConfig{
-		Level:   "INFO",
-		Enabled: &enabled,
-	}
-
-	sidecars := []CapabilitySidecarInfo{
-		newTestSidecar("kubectl", 8081, "bitnami/kubectl:1.30"),
-		newTestSidecar("helm", 8082, "alpine/helm:3.14"),
-		newTestSidecar("gh", 8083, "ghcr.io/cli/cli:2.47"),
-	}
-	sidecars[0].Capability.Spec.Container.ServiceAccountName = "sre-sa"
-	sidecars[2].Capability.Spec.Secrets = []agentsv1alpha1.SecretEnvVar{
-		{Name: "GITHUB_TOKEN", ValueFrom: agentsv1alpha1.SecretKeySelector{Name: "gh-secret", Key: "token"}},
-	}
-
-	dep := AgentDeployment(agent, "", "", sidecars, nil, nil)
-
-	// Basic structure
-	if dep.Name != "sre-agent" {
-		t.Fatalf("expected name 'sre-agent', got %q", dep.Name)
-	}
-
-	// Containers: 1 main + 3 sidecars = 4
-	containers := dep.Spec.Template.Spec.Containers
-	if len(containers) != 4 {
-		t.Fatalf("expected 4 containers, got %d", len(containers))
-	}
-
-	// Main container uses custom image
-	if containers[0].Image != "ghcr.io/anomalyco/opencode:v1.2.0" {
-		t.Fatalf("expected custom image, got %q", containers[0].Image)
-	}
-
-	// All containers use PullAlways
-	for _, c := range containers {
-		if c.ImagePullPolicy != corev1.PullAlways {
-			t.Fatalf("container %q should use PullAlways, got %v", c.Name, c.ImagePullPolicy)
-		}
-	}
-
-	// ServiceAccount from kubectl sidecar
-	if dep.Spec.Template.Spec.ServiceAccountName != "sre-sa" {
-		t.Fatalf("expected SA 'sre-sa', got %q", dep.Spec.Template.Spec.ServiceAccountName)
-	}
-
-	// PVC volume
-	var hasPVC bool
-	for _, v := range dep.Spec.Template.Spec.Volumes {
-		if v.Name == "data" && v.PersistentVolumeClaim != nil {
-			hasPVC = true
-		}
-	}
-	if !hasPVC {
-		t.Fatal("expected PVC data volume")
-	}
-
-	// Strategy must be Recreate when PVC is used (RWO block storage)
-	if dep.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
-		t.Fatalf("expected Recreate strategy with PVC, got %v", dep.Spec.Strategy.Type)
-	}
-
-	// Sidecar config volumes
-	volumeNames := make(map[string]bool)
-	for _, v := range dep.Spec.Template.Spec.Volumes {
-		volumeNames[v.Name] = true
-	}
-	for _, name := range []string{"config-kubectl", "config-helm", "config-gh"} {
-		if !volumeNames[name] {
-			t.Fatalf("expected volume %q", name)
-		}
-	}
-
-	// Configmap hash annotation should NOT be present — config propagates via volume updates
-	if _, ok := dep.Spec.Template.Annotations[ConfigMapHashAnnotation]; ok {
-		t.Fatal("configmap hash annotation should not be present on pod template")
-	}
-
-	// Desired spec hash annotation on deployment
-	if dep.Annotations[DesiredSpecHashAnnotation] == "" {
-		t.Fatal("expected desired-spec-hash annotation on deployment")
-	}
-
-	// Init containers: 1 config init + 1 gateway init (because sidecars are present)
-	initContainers := dep.Spec.Template.Spec.InitContainers
-	if len(initContainers) != 2 {
-		t.Fatalf("expected 2 init containers (config + gateway), got %d", len(initContainers))
-	}
-	if initContainers[0].Name != "init-config" {
-		t.Fatalf("expected first init container 'init-config', got %q", initContainers[0].Name)
-	}
-	if initContainers[1].Name != "init-gateway" {
-		t.Fatalf("expected second init container 'init-gateway', got %q", initContainers[1].Name)
-	}
-	if initContainers[1].Image != DefaultGatewayImage {
-		t.Fatalf("expected gateway init image %q, got %q", DefaultGatewayImage, initContainers[1].Image)
-	}
-
-	// gateway-bin volume should be present
-	if !volumeNames["gateway-bin"] {
-		t.Fatal("expected gateway-bin volume when sidecars are present")
-	}
-
-	// All sidecars should use the gateway binary from the init container
-	for _, c := range containers[1:] {
-		if len(c.Command) == 0 || c.Command[0] != "/gateway/capability-gateway" {
-			t.Fatalf("sidecar %q should use /gateway/capability-gateway command, got %v", c.Name, c.Command)
-		}
-	}
-
-	// Logging args
-	mainArgs := strings.Join(containers[0].Args, " ")
-	if !strings.Contains(mainArgs, "--print-logs") {
-		t.Fatal("expected --print-logs in args")
-	}
-	if !strings.Contains(mainArgs, "--log-level") || !strings.Contains(mainArgs, "INFO") {
-		t.Fatal("expected --log-level INFO in args")
-	}
-
-	// gh sidecar has GITHUB_TOKEN secret
-	ghContainer := containers[3]
-	var hasGHToken bool
-	for _, e := range ghContainer.Env {
-		if e.Name == "GITHUB_TOKEN" && e.ValueFrom != nil {
-			hasGHToken = true
-		}
-	}
-	if !hasGHToken {
-		t.Fatal("expected GITHUB_TOKEN env in gh sidecar")
 	}
 }

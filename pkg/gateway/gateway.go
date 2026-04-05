@@ -1,6 +1,5 @@
 // Package gateway provides shared middleware for the capability-gateway binary.
-// This includes rate limiting, audit logging, health checks, and configuration
-// that applies to all gateway modes (CLI and MCP).
+// This includes rate limiting, audit logging, health checks, and configuration.
 package gateway
 
 import (
@@ -14,23 +13,15 @@ import (
 
 // Config holds shared gateway configuration loaded from environment variables.
 type Config struct {
-	// Mode is the gateway mode: "cli" or "mcp"
-	Mode string
 	// Port is the HTTP port to listen on
 	Port int
 	// ToolName is the name of the capability (for logging/metrics)
 	ToolName string
 
-	// MCP-specific fields
-	// Command is the MCP server command to spawn (for mcp mode)
+	// Command is the MCP server command to spawn
 	Command string
 
-	// CLI-specific fields
-	// CommandPrefix is required prefix for CLI commands (for cli mode)
-	CommandPrefix string
-	// WorkspacePath is the working directory for CLI commands
-	WorkspacePath string
-	// ConfigPath is the path to config files (command-prefix, etc.)
+	// ConfigPath is the path to config files (mcp-deny-rules, etc.)
 	ConfigPath string
 
 	// Shared security/observability
@@ -44,13 +35,8 @@ type Config struct {
 // LoadConfig reads gateway configuration from environment variables.
 func LoadConfig() Config {
 	config := Config{
-		Mode:       "cli",
 		Port:       8080,
 		ConfigPath: "/etc/tool",
-	}
-
-	if mode := os.Getenv("GATEWAY_MODE"); mode != "" {
-		config.Mode = mode
 	}
 
 	if port := os.Getenv("GATEWAY_PORT"); port != "" {
@@ -70,12 +56,8 @@ func LoadConfig() Config {
 		config.ToolName = "unknown"
 	}
 
-	// MCP mode: command to spawn
+	// MCP server command to spawn
 	config.Command = os.Getenv("GATEWAY_COMMAND")
-
-	// CLI mode: workspace and prefix
-	config.WorkspacePath = os.Getenv("WORKSPACE_PATH")
-	config.CommandPrefix = loadStringFile(config.ConfigPath + "/command-prefix")
 
 	// Shared security
 	if rpm := os.Getenv("RATE_LIMIT_RPM"); rpm != "" {
@@ -89,15 +71,6 @@ func LoadConfig() Config {
 	config.AuditLogOutput = os.Getenv("AUDIT_LOG_OUTPUT") == "true"
 
 	return config
-}
-
-// loadStringFile reads a single string from a file (trimmed)
-func loadStringFile(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 // =============================================================================
@@ -198,67 +171,4 @@ func (a *AuditLogger) LogResponse(msg string, attrs ...any) {
 		return
 	}
 	a.logger.Info(msg, attrs...)
-}
-
-// =============================================================================
-// GIT AUTH CONFIGURATION
-// =============================================================================
-
-// ConfigureGitAuth sets up git to use tokens for HTTPS authentication.
-// Without this, `git push` over HTTPS fails because git cannot read credentials
-// interactively in a container.
-//
-// Supports both GitHub (GH_TOKEN/GITHUB_TOKEN) and GitLab (GITLAB_TOKEN).
-// The `gh`/`glab` CLIs read these env vars automatically,
-// but raw git commands do not.
-func ConfigureGitAuth(logger *slog.Logger) {
-	ghToken := os.Getenv("GH_TOKEN")
-	if ghToken == "" {
-		ghToken = os.Getenv("GITHUB_TOKEN")
-	}
-	glToken := os.Getenv("GITLAB_TOKEN")
-
-	if ghToken == "" && glToken == "" {
-		return
-	}
-
-	var script string
-	var logMsg string
-
-	switch {
-	case ghToken != "" && glToken == "":
-		script = "#!/bin/sh\necho \"$GH_TOKEN\"\n"
-		if os.Getenv("GH_TOKEN") == "" {
-			os.Setenv("GH_TOKEN", ghToken)
-		}
-		logMsg = "configured git HTTPS authentication for GitHub via GIT_ASKPASS"
-
-	case glToken != "" && ghToken == "":
-		script = "#!/bin/sh\necho \"$GITLAB_TOKEN\"\n"
-		logMsg = "configured git HTTPS authentication for GitLab via GIT_ASKPASS"
-
-	default:
-		// Both tokens present — route by host.
-		// GIT_ASKPASS receives a prompt like "Password for 'https://github.com':"
-		script = `#!/bin/sh
-case "$1" in
-  *gitlab*) echo "$GITLAB_TOKEN" ;;
-  *)        echo "$GH_TOKEN" ;;
-esac
-`
-		if os.Getenv("GH_TOKEN") == "" {
-			os.Setenv("GH_TOKEN", ghToken)
-		}
-		logMsg = "configured git HTTPS authentication for GitHub + GitLab via GIT_ASKPASS"
-	}
-
-	askpassPath := "/tmp/git-askpass.sh"
-	if err := os.WriteFile(askpassPath, []byte(script), 0755); err != nil {
-		logger.Warn("failed to write git-askpass script", "error", err)
-		return
-	}
-	os.Setenv("GIT_ASKPASS", askpassPath)
-	os.Setenv("GIT_TERMINAL_PROMPT", "0")
-
-	logger.Info(logMsg)
 }

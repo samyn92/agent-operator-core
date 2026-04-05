@@ -1,121 +1,8 @@
 package resources
 
 import (
-	"fmt"
-	"strings"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
 )
-
-// CapabilityConfigMap creates a ConfigMap for a container capability (sidecar) with gateway config.
-// Contains command-prefix, instructions, and deny-patterns for gateway-side enforcement.
-// Allow/approve patterns are handled by OpenCode's native permission system via opencode.json.
-// Deny patterns are ALSO enforced by the gateway sidecar as a security backstop — this ensures
-// deny rules cannot be bypassed by OpenCode's runtime "Always Allow" approvals.
-func CapabilityConfigMap(agent *agentsv1alpha1.Agent, capability *agentsv1alpha1.Capability, alias string) *corev1.ConfigMap {
-	toolName := capability.Name
-	if alias != "" {
-		toolName = alias
-	}
-
-	name := agent.Name + "-" + toolName
-	labels := capabilityLabels(agent, capability, toolName)
-
-	data := map[string]string{
-		"instructions": capability.Spec.Instructions,
-	}
-
-	// Container capabilities have a command prefix
-	var commandPrefix string
-	if capability.Spec.Container != nil {
-		commandPrefix = capability.Spec.Container.CommandPrefix
-		data["command-prefix"] = commandPrefix
-	}
-
-	// Write deny patterns as a newline-separated file for the gateway sidecar.
-	// CRD patterns don't include the command prefix (e.g., "push * main"),
-	// but the gateway sees full commands (e.g., "git -C /path push origin main"),
-	// so we prepend the prefix to each pattern.
-	if capability.Spec.Permissions != nil && len(capability.Spec.Permissions.Deny) > 0 {
-		var patterns []string
-		for _, pattern := range capability.Spec.Permissions.Deny {
-			fullPattern := pattern
-			if commandPrefix != "" {
-				fullPattern = commandPrefix + pattern
-			}
-			patterns = append(patterns, fullPattern)
-		}
-		data["deny-patterns"] = strings.Join(patterns, "\n")
-	}
-
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name + "-config",
-			Namespace: agent.Namespace,
-			Labels:    labels,
-		},
-		Data: data,
-	}
-}
-
-// ContainerCapabilityToSourceInfo converts a Container Capability to SourceInfo for config generation.
-// port is the localhost port where this capability's sidecar listens.
-func ContainerCapabilityToSourceInfo(agent *agentsv1alpha1.Agent, capability *agentsv1alpha1.Capability, alias string, port int32) SourceInfo {
-	toolName := capability.Name
-	if alias != "" {
-		toolName = alias
-	}
-
-	// Build service URL for this capability (sidecar mode, localhost)
-	serviceURL := fmt.Sprintf("http://localhost:%d", port)
-
-	// Resolve allow/deny patterns from permissions
-	var allow, deny []string
-	var approveRules []ApprovalRuleInfo
-
-	if capability.Spec.Permissions != nil {
-		allow = capability.Spec.Permissions.Allow
-		deny = capability.Spec.Permissions.Deny
-		for _, rule := range capability.Spec.Permissions.Approve {
-			timeout := rule.Timeout
-			if timeout == 0 {
-				timeout = 300 // Default 5 minutes
-			}
-			severity := rule.Severity
-			if severity == "" {
-				severity = "warning"
-			}
-			approveRules = append(approveRules, ApprovalRuleInfo{
-				Pattern:  rule.Pattern,
-				Message:  rule.Message,
-				Severity: severity,
-				Timeout:  timeout,
-			})
-		}
-	}
-
-	// Get container-specific fields
-	var commandPrefix, containerType string
-	if capability.Spec.Container != nil {
-		commandPrefix = capability.Spec.Container.CommandPrefix
-		containerType = capability.Spec.Container.ContainerType
-	}
-
-	return SourceInfo{
-		Name:          toolName,
-		Type:          containerType,
-		Description:   capability.Spec.Description,
-		ServiceURL:    serviceURL,
-		CommandPrefix: commandPrefix,
-		Instructions:  capability.Spec.Instructions,
-		Allow:         allow,
-		Deny:          deny,
-		ApproveRules:  approveRules,
-	}
-}
 
 // MCPCapabilityToMCPEntry converts an MCP Capability to an MCPEntry for opencode.json injection.
 // For "local" mode: produces a local entry with command + env.
@@ -154,16 +41,5 @@ func MCPCapabilityToMCPEntry(capability *agentsv1alpha1.Capability) *MCPEntry {
 
 	default:
 		return nil
-	}
-}
-
-// capabilityLabels returns common labels for capability resources
-func capabilityLabels(agent *agentsv1alpha1.Agent, capability *agentsv1alpha1.Capability, toolName string) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       "capability",
-		"app.kubernetes.io/instance":   agent.Name + "-" + toolName,
-		"app.kubernetes.io/managed-by": "agent-operator",
-		"agents.io/agent":              agent.Name,
-		"agents.io/capability":         capability.Name,
 	}
 }

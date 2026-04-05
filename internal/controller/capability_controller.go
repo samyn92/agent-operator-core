@@ -302,8 +302,6 @@ func (r *CapabilityReconciler) validateCapability(capability *agentsv1alpha1.Cap
 		return r.validateMCPCapability(capability)
 	case agentsv1alpha1.CapabilityTypeSkill:
 		return r.validateSkillCapability(capability)
-	case agentsv1alpha1.CapabilityTypeTool:
-		return r.validateToolCapability(capability)
 	case agentsv1alpha1.CapabilityTypePlugin:
 		return r.validatePluginCapability(capability)
 	default:
@@ -393,21 +391,6 @@ func (r *CapabilityReconciler) validateSkillCapability(capability *agentsv1alpha
 	if capability.Spec.Skill.OCIRef != nil {
 		if err := validateOCIRef(capability.Spec.Skill.OCIRef); err != nil {
 			return fmt.Errorf("spec.skill.ociRef: %w", err)
-		}
-	}
-	return nil
-}
-
-func (r *CapabilityReconciler) validateToolCapability(capability *agentsv1alpha1.Capability) error {
-	if capability.Spec.Tool == nil {
-		return fmt.Errorf("spec.tool is required when type is Tool")
-	}
-	if capability.Spec.Tool.Code == "" && capability.Spec.Tool.ConfigMapRef == nil && capability.Spec.Tool.OCIRef == nil {
-		return fmt.Errorf("spec.tool.code, spec.tool.configMapRef, or spec.tool.ociRef is required")
-	}
-	if capability.Spec.Tool.OCIRef != nil {
-		if err := validateOCIRef(capability.Spec.Tool.OCIRef); err != nil {
-			return fmt.Errorf("spec.tool.ociRef: %w", err)
 		}
 	}
 	return nil

@@ -435,7 +435,7 @@ func TestAgentDeployment_MCPWorkspace(t *testing.T) {
 		{PVCName: "mcp-git-mcp-workspace", MountPath: "/data/workspace"},
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, workspaces, nil)
+	dep := AgentDeployment(agent, "", "", workspaces, nil)
 
 	// Should have the MCP workspace PVC volume
 	var found bool
@@ -471,7 +471,7 @@ func TestAgentDeployment_MultipleMCPWorkspaces(t *testing.T) {
 		{PVCName: "mcp-terraform-workspace", MountPath: "/data/terraform"},
 	}
 
-	dep := AgentDeployment(agent, "", "", nil, workspaces, nil)
+	dep := AgentDeployment(agent, "", "", workspaces, nil)
 
 	mainContainer := dep.Spec.Template.Spec.Containers[0]
 	mountMap := make(map[string]string)
@@ -489,7 +489,7 @@ func TestAgentDeployment_MultipleMCPWorkspaces(t *testing.T) {
 
 func TestAgentDeployment_NoMCPWorkspace(t *testing.T) {
 	agent := newTestAgent("my-agent", "agents")
-	dep := AgentDeployment(agent, "", "", nil, nil, nil)
+	dep := AgentDeployment(agent, "", "", nil, nil)
 
 	// Should NOT have any mcp-workspace volumes
 	for _, vol := range dep.Spec.Template.Spec.Volumes {

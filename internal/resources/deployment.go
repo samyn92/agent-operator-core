@@ -11,7 +11,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
 )
@@ -21,25 +20,19 @@ const (
 	// that enforce image registry restrictions (e.g. via proxy registries)
 	DefaultOpencodeImage = "ghcr.io/samyn92/opencode:latest"
 	OpencodePort         = 4096
-	// SidecarBasePort is the starting port for capability sidecars
-	// Each sidecar gets port 8081, 8082, etc.
-	SidecarBasePort = 8081
 	// DesiredSpecHashAnnotation stores a hash of the operator's desired DeploymentSpec.
 	// This avoids spurious updates caused by Kubernetes adding server-side defaults
 	// (terminationGracePeriodSeconds, dnsPolicy, etc.) that make reflect.DeepEqual fail.
 	DesiredSpecHashAnnotation = "agents.io/desired-spec-hash"
 )
 
-// CapabilitySidecarInfo contains resolved Capability information needed for sidecar generation.
-// Only used for Container-type capabilities.
+// CapabilitySidecarInfo is retained for backwards compatibility.
+// Container sidecar deployment has been removed; this type is kept so existing
+// references compile but is not used at runtime.
 type CapabilitySidecarInfo struct {
-	// Name is the tool name (capability name or alias)
-	Name string
-	// Capability is the Capability CRD
-	Capability *agentsv1alpha1.Capability
-	// Port is the port this sidecar listens on (8081, 8082, etc.)
-	Port int32
-	// ConfigMapName is the name of the ConfigMap with allow/deny patterns
+	Name          string
+	Capability    *agentsv1alpha1.Capability
+	Port          int32
 	ConfigMapName string
 }
 
@@ -70,17 +63,13 @@ type GitWorkspaceInfo struct {
 // container. This enables the init container to copy pre-cached npm provider
 // packages from the opencode image to the data volume, which is essential for
 // airgapped environments.
-func getImageConfig(agent *agentsv1alpha1.Agent) (opencodeImage, initImage, gatewayImage string, pullPolicy corev1.PullPolicy) {
+func getImageConfig(agent *agentsv1alpha1.Agent) (opencodeImage, initImage string, pullPolicy corev1.PullPolicy) {
 	opencodeImage = DefaultOpencodeImage
-	gatewayImage = DefaultGatewayImage
 	pullPolicy = corev1.PullIfNotPresent
 
 	if agent.Spec.Images != nil {
 		if agent.Spec.Images.OpenCode != "" {
 			opencodeImage = agent.Spec.Images.OpenCode
-		}
-		if agent.Spec.Images.Gateway != "" {
-			gatewayImage = agent.Spec.Images.Gateway
 		}
 		if agent.Spec.Images.PullPolicy != "" {
 			pullPolicy = agent.Spec.Images.PullPolicy
@@ -101,18 +90,6 @@ func getImageConfig(agent *agentsv1alpha1.Agent) (opencodeImage, initImage, gate
 // ConfigMapHashAnnotation is the annotation key for the ConfigMap content hash
 const ConfigMapHashAnnotation = "agents.io/configmap-hash"
 
-// getServiceAccountName determines the ServiceAccount for the agent pod.
-// Since all sidecars share the same pod, they share the same ServiceAccount.
-// We use the first sidecar's ServiceAccount that specifies one (typically kubectl).
-func getServiceAccountName(sidecars []CapabilitySidecarInfo) string {
-	for _, sidecar := range sidecars {
-		if sidecar.Capability != nil && sidecar.Capability.Spec.Container != nil && sidecar.Capability.Spec.Container.ServiceAccountName != "" {
-			return sidecar.Capability.Spec.Container.ServiceAccountName
-		}
-	}
-	return "" // Use default if no capability specifies a ServiceAccount
-}
-
 // MCPCapabilityHashAnnotation is the annotation key for the MCP capability spec hash.
 // When any MCP capability referenced by the agent changes (command, image, env, workspace,
 // permissions, etc.), this hash changes, updating the pod template and triggering a
@@ -124,10 +101,7 @@ const MCPCapabilityHashAnnotation = "agents.io/mcp-capability-hash"
 // AgentDeployment creates a Deployment for the agent.
 // configMapHash is the SHA256 hash of the ConfigMap data; when it changes the pod
 // template annotation changes, triggering a rolling restart so init-container
-// generated files (tool .ts, plugins, skills) are regenerated from the updated
-// ConfigMap. Symlinked files (opencode.json, AGENTS.md) would update via kubelet
-// volume propagation, but tool files are copied by the init container and require
-// a restart to pick up changes.
+// generated files (plugins, skills) are regenerated from the updated ConfigMap.
 //
 // mcpCapabilityHash is a SHA256 hash of all referenced MCP capability specs. When
 // any MCP capability changes, this hash changes, triggering a rolling restart so
@@ -140,21 +114,16 @@ const MCPCapabilityHashAnnotation = "agents.io/mcp-capability-hash"
 // gitWorkspaces contains PVC information for GitWorkspace CRs referenced by the
 // agent's workspaceRefs. These RWX PVCs provide pre-cloned Git repositories with
 // bare-clone + worktree architecture. Agents use them for code reading and editing.
-func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapabilityHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo, gitWorkspaces []GitWorkspaceInfo) *appsv1.Deployment {
+func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapabilityHash string, mcpWorkspaces []MCPWorkspaceInfo, gitWorkspaces []GitWorkspaceInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
 	// Get image configuration
-	opencodeImage, initImage, gatewayImage, pullPolicy := getImageConfig(agent)
+	opencodeImage, initImage, pullPolicy := getImageConfig(agent)
 
-	// Build containers - opencode main container + capability sidecars
+	// Build containers - opencode main container only (sidecars removed)
 	containers := []corev1.Container{
 		buildOpencodeContainer(agent, opencodeImage, pullPolicy),
-	}
-
-	// Add capability sidecar containers
-	for _, sidecar := range sidecars {
-		containers = append(containers, buildCapabilitySidecarContainer(agent, sidecar, pullPolicy))
 	}
 
 	// Build init container to set up config
@@ -162,48 +131,8 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapab
 		buildInitContainer(initImage, pullPolicy),
 	}
 
-	// If there are capability sidecars, add the gateway init container.
-	// This copies the capability-gateway binary into a shared emptyDir volume
-	// that all sidecar containers mount, so the gateway binary is decoupled
-	// from individual tool images and can be updated centrally.
-	if len(sidecars) > 0 {
-		initContainers = append(initContainers, buildGatewayInitContainer(gatewayImage, pullPolicy))
-	}
-
-	// Build volumes (includes sidecar config volumes)
+	// Build volumes
 	volumes := buildVolumes(agent)
-
-	// Add ConfigMap volumes for each sidecar
-	for _, sidecar := range sidecars {
-		volumes = append(volumes, corev1.Volume{
-			Name: "config-" + sidecar.Name,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: sidecar.ConfigMapName,
-					},
-				},
-			},
-		})
-	}
-
-	// Add the shared gateway-bin emptyDir volume when sidecars are present.
-	// The gateway init container copies the binary here; all sidecars mount it.
-	// Also add a writable /tmp volume since the root filesystem is read-only.
-	if len(sidecars) > 0 {
-		volumes = append(volumes, corev1.Volume{
-			Name: "gateway-bin",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
-		volumes = append(volumes, corev1.Volume{
-			Name: "tmp",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
-	}
 
 	// Add MCP workspace PVC volumes.
 	// When an MCP server capability has workspace.enabled, both the MCP server pod
@@ -283,9 +212,6 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapab
 		podAnnotations[MCPCapabilityHashAnnotation] = mcpCapabilityHash
 	}
 
-	// Determine ServiceAccount - sidecars share the pod's SA
-	serviceAccountName := getServiceAccountName(sidecars)
-
 	podSpec := corev1.PodSpec{
 		InitContainers:               initContainers,
 		Containers:                   containers,
@@ -300,9 +226,6 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapab
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
-	}
-	if serviceAccountName != "" {
-		podSpec.ServiceAccountName = serviceAccountName
 	}
 
 	// When a PVC is attached (RWO block storage), the Deployment must use Recreate
@@ -466,159 +389,6 @@ func buildOpencodeContainer(agent *agentsv1alpha1.Agent, image string, pullPolic
 	return container
 }
 
-// buildCapabilitySidecarContainer creates a sidecar container for a Container capability.
-// The sidecar runs the capability-gateway in CLI mode and shares the /data volume with
-// the main container. The gateway binary is injected via an init container (see
-// buildGatewayInitContainer) rather than being baked into each tool image.
-func buildCapabilitySidecarContainer(agent *agentsv1alpha1.Agent, sidecar CapabilitySidecarInfo, pullPolicy corev1.PullPolicy) corev1.Container {
-	capability := sidecar.Capability
-	container := capability.Spec.Container
-
-	// Build environment variables — use GATEWAY_* env vars for capability-gateway.
-	// TOOL_PORT and TOOL_NAME are also set as aliases for simpler configuration.
-	envVars := []corev1.EnvVar{
-		{Name: "GATEWAY_MODE", Value: "cli"},
-		{Name: "GATEWAY_PORT", Value: fmt.Sprintf("%d", sidecar.Port)},
-		{Name: "TOOL_PORT", Value: fmt.Sprintf("%d", sidecar.Port)},
-		{Name: "TOOL_NAME", Value: sidecar.Name},
-	}
-
-	// Add source type for tool wrapper awareness
-	if container != nil && container.ContainerType != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "SOURCE_TYPE", Value: container.ContainerType})
-	}
-
-	// Add audit config
-	if capability.Spec.Audit {
-		envVars = append(envVars, corev1.EnvVar{Name: "AUDIT_ENABLED", Value: "true"})
-		envVars = append(envVars, corev1.EnvVar{Name: "AUDIT_LOG_COMMANDS", Value: "true"})
-	}
-
-	// Add rate limit config
-	if capability.Spec.RateLimit != nil && capability.Spec.RateLimit.RequestsPerMinute > 0 {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "RATE_LIMIT_RPM",
-			Value: fmt.Sprintf("%d", capability.Spec.RateLimit.RequestsPerMinute),
-		})
-	}
-
-	// Add git author config if specified
-	if container != nil && container.Config != nil && container.Config.Git != nil && container.Config.Git.Author != nil {
-		envVars = append(envVars,
-			corev1.EnvVar{Name: "GIT_AUTHOR_NAME", Value: container.Config.Git.Author.Name},
-			corev1.EnvVar{Name: "GIT_AUTHOR_EMAIL", Value: container.Config.Git.Author.Email},
-			corev1.EnvVar{Name: "GIT_COMMITTER_NAME", Value: container.Config.Git.Author.Name},
-			corev1.EnvVar{Name: "GIT_COMMITTER_EMAIL", Value: container.Config.Git.Author.Email},
-		)
-	}
-
-	// Add GitLab domain config if specified
-	// The glab CLI and git credential helper use GITLAB_HOST to target the right instance
-	if container != nil && container.Config != nil && container.Config.GitLab != nil && container.Config.GitLab.Domain != "" {
-		envVars = append(envVars, corev1.EnvVar{Name: "GITLAB_HOST", Value: container.Config.GitLab.Domain})
-	}
-
-	// Sidecars share the /data/workspace with the main container
-	// No need for path rewriting!
-	envVars = append(envVars, corev1.EnvVar{Name: "WORKSPACE_PATH", Value: "/data/workspace"})
-
-	// Set HOME and XDG_CONFIG_HOME to writable paths on the shared data volume.
-	// The root filesystem is read-only (hardened security context), so tools like
-	// glab, gh, git, helm etc. that write to $HOME/.config will fail without this.
-	envVars = append(envVars,
-		corev1.EnvVar{Name: "HOME", Value: "/data"},
-		corev1.EnvVar{Name: "XDG_CONFIG_HOME", Value: "/data/.config"},
-	)
-
-	// Add secret environment variables
-	for _, secret := range capability.Spec.Secrets {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: secret.Name,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: secret.ValueFrom.Name,
-					},
-					Key: secret.ValueFrom.Key,
-				},
-			},
-		})
-	}
-
-	// Volume mounts - gateway binary, config, shared workspace, and writable tmp
-	volumeMounts := []corev1.VolumeMount{
-		{Name: "gateway-bin", MountPath: "/gateway", ReadOnly: true},
-		{Name: "config-" + sidecar.Name, MountPath: "/etc/tool", ReadOnly: true},
-		{Name: "data", MountPath: "/data"}, // Share workspace with main container
-		{Name: "tmp", MountPath: "/tmp"},   // Writable tmp for tools (git, glab, etc.)
-	}
-
-	// Resource requirements
-	var resourceReqs corev1.ResourceRequirements
-	if capability.Spec.Resources != nil {
-		resourceReqs = *capability.Spec.Resources
-	} else {
-		resourceReqs = corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-			},
-		}
-	}
-
-	// Port name must be max 15 chars - use truncated name or port number
-	portName := sidecar.Name
-	if len(portName) > 15 {
-		portName = fmt.Sprintf("cap-%d", sidecar.Port)
-	}
-
-	// Get image from container spec
-	image := ""
-	if container != nil {
-		image = container.Image
-	}
-
-	return corev1.Container{
-		Name:            sidecar.Name,
-		Image:           image,
-		ImagePullPolicy: pullPolicy,
-		// Override the image's ENTRYPOINT to use the capability-gateway binary
-		// injected by the init container. This decouples the gateway version from
-		// the tool image, allowing centralized updates to the gateway.
-		Command: []string{"/gateway/capability-gateway"},
-		Ports: []corev1.ContainerPort{
-			{Name: portName, ContainerPort: sidecar.Port, Protocol: corev1.ProtocolTCP},
-		},
-		Env:             envVars,
-		VolumeMounts:    volumeMounts,
-		Resources:       resourceReqs,
-		SecurityContext: hardenedSecurityContext(),
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/healthz",
-					Port: intstr.FromInt32(sidecar.Port),
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/healthz",
-					Port: intstr.FromInt32(sidecar.Port),
-				},
-			},
-			InitialDelaySeconds: 15,
-			PeriodSeconds:       20,
-		},
-	}
-}
-
 func buildInitContainer(image string, pullPolicy corev1.PullPolicy) corev1.Container {
 	// Init container copies config from ConfigMap to the data volume with correct permissions
 	// OpenCode resolves plugin paths relative to the config directory (/data/.config/opencode/)
@@ -684,36 +454,6 @@ func buildInitContainer(image string, pullPolicy corev1.PullPolicy) corev1.Conta
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "data", MountPath: "/data"},
 			{Name: "config", MountPath: "/config"},
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
-			},
-		},
-		SecurityContext: hardenedSecurityContext(),
-	}
-}
-
-// buildGatewayInitContainer creates an init container that copies the
-// capability-gateway binary from the gateway image into a shared emptyDir
-// volume (/gateway). This binary is then used by all sidecar containers
-// instead of a gateway binary baked into each tool image.
-//
-// This is the same init container pattern used for MCP server deployments
-// (see mcp_deployment.go), ensuring a consistent gateway injection mechanism.
-func buildGatewayInitContainer(image string, pullPolicy corev1.PullPolicy) corev1.Container {
-	return corev1.Container{
-		Name:            "init-gateway",
-		Image:           image,
-		ImagePullPolicy: pullPolicy,
-		Command:         []string{"cp", "/capability-gateway", "/gateway/capability-gateway"},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "gateway-bin", MountPath: "/gateway"},
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{

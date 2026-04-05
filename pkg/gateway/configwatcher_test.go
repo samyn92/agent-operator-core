@@ -12,8 +12,8 @@ import (
 func TestConfigWatcher_InitialLoad(t *testing.T) {
 	dir := t.TempDir()
 
-	// Write command-prefix file before creating watcher
-	if err := os.WriteFile(filepath.Join(dir, "command-prefix"), []byte("kubectl "), 0644); err != nil {
+	// Write mcp-deny-rules file before creating watcher
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -24,14 +24,18 @@ func TestConfigWatcher_InitialLoad(t *testing.T) {
 	}
 	defer cw.Stop()
 
-	if got := cw.CommandPrefix(); got != "kubectl" {
-		t.Fatalf("expected initial command-prefix 'kubectl', got %q", got)
+	got := cw.MCPDenyRules()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 initial MCP deny rule, got %d: %v", len(got), got)
+	}
+	if got[0].Tool != "git_push" {
+		t.Fatalf("expected initial rule tool 'git_push', got %q", got[0].Tool)
 	}
 }
 
 func TestConfigWatcher_InitialLoadEmpty(t *testing.T) {
 	dir := t.TempDir()
-	// No command-prefix file
+	// No mcp-deny-rules file
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 	cw, err := NewConfigWatcher(dir, logger)
@@ -40,8 +44,9 @@ func TestConfigWatcher_InitialLoadEmpty(t *testing.T) {
 	}
 	defer cw.Stop()
 
-	if got := cw.CommandPrefix(); got != "" {
-		t.Fatalf("expected empty command-prefix when file doesn't exist, got %q", got)
+	got := cw.MCPDenyRules()
+	if got != nil {
+		t.Fatalf("expected nil MCP deny rules when file doesn't exist, got %v", got)
 	}
 }
 
@@ -49,7 +54,7 @@ func TestConfigWatcher_DetectsFileChange(t *testing.T) {
 	dir := t.TempDir()
 
 	// Initial content
-	if err := os.WriteFile(filepath.Join(dir, "command-prefix"), []byte("kubectl"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,43 +66,43 @@ func TestConfigWatcher_DetectsFileChange(t *testing.T) {
 	cw.Start()
 	defer cw.Stop()
 
-	if got := cw.CommandPrefix(); got != "kubectl" {
-		t.Fatalf("expected initial 'kubectl', got %q", got)
+	got := cw.MCPDenyRules()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 initial rule, got %d", len(got))
 	}
 
 	// Set up a channel to detect reload
 	reloaded := make(chan string, 1)
 	cw.SetOnReload(func(key, value string) {
-		if key == "command-prefix" {
+		if key == "mcp-deny-rules" {
 			reloaded <- value
 		}
 	})
 
 	// Update the file (simulates Kubernetes ConfigMap update)
-	if err := os.WriteFile(filepath.Join(dir, "command-prefix"), []byte("helm"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push\ngit_reset_hard"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Wait for reload with timeout
 	select {
-	case val := <-reloaded:
-		if val != "helm" {
-			t.Fatalf("expected reloaded value 'helm', got %q", val)
-		}
+	case <-reloaded:
+		// ok
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for config reload")
 	}
 
 	// Verify the getter returns the new value
-	if got := cw.CommandPrefix(); got != "helm" {
-		t.Fatalf("expected updated 'helm', got %q", got)
+	got = cw.MCPDenyRules()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rules after reload, got %d", len(got))
 	}
 }
 
 func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 	// Simulate the Kubernetes ConfigMap volume symlink swap pattern:
 	// ..data -> ..2024_01_01/
-	// command-prefix -> ..data/command-prefix
+	// mcp-deny-rules -> ..data/mcp-deny-rules
 
 	dir := t.TempDir()
 
@@ -106,7 +111,7 @@ func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 	if err := os.Mkdir(target1, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(target1, "command-prefix"), []byte("kubectl"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(target1, "mcp-deny-rules"), []byte("git_push"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,8 +121,8 @@ func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create command-prefix symlink -> ..data/command-prefix
-	if err := os.Symlink(filepath.Join("..data", "command-prefix"), filepath.Join(dir, "command-prefix")); err != nil {
+	// Create mcp-deny-rules symlink -> ..data/mcp-deny-rules
+	if err := os.Symlink(filepath.Join("..data", "mcp-deny-rules"), filepath.Join(dir, "mcp-deny-rules")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,14 +134,15 @@ func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 	cw.Start()
 	defer cw.Stop()
 
-	if got := cw.CommandPrefix(); got != "kubectl" {
-		t.Fatalf("expected initial 'kubectl', got %q", got)
+	got := cw.MCPDenyRules()
+	if len(got) != 1 || got[0].Tool != "git_push" {
+		t.Fatalf("expected initial rule [git_push], got %v", got)
 	}
 
 	// Set up reload detection
 	reloaded := make(chan string, 1)
 	cw.SetOnReload(func(key, value string) {
-		if key == "command-prefix" {
+		if key == "mcp-deny-rules" {
 			reloaded <- value
 		}
 	})
@@ -147,7 +153,7 @@ func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 	if err := os.Mkdir(target2, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(target2, "command-prefix"), []byte("helm"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(target2, "mcp-deny-rules"), []byte("git_push\ngit_reset_hard"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,22 +168,21 @@ func TestConfigWatcher_SymlinkSwap(t *testing.T) {
 
 	// Wait for reload
 	select {
-	case val := <-reloaded:
-		if val != "helm" {
-			t.Fatalf("expected reloaded value 'helm', got %q", val)
-		}
+	case <-reloaded:
+		// ok
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for config reload after symlink swap")
 	}
 
-	if got := cw.CommandPrefix(); got != "helm" {
-		t.Fatalf("expected updated 'helm', got %q", got)
+	got = cw.MCPDenyRules()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rules after symlink swap, got %d: %v", len(got), got)
 	}
 }
 
 func TestConfigWatcher_ConcurrentAccess(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "command-prefix"), []byte("kubectl"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mcp-deny-rules"), []byte("git_push:branch=main"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,7 +201,7 @@ func TestConfigWatcher_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				_ = cw.CommandPrefix()
+				_ = cw.MCPDenyRules()
 			}
 		}()
 	}
@@ -209,165 +214,6 @@ func TestConfigWatcher_InvalidDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent directory")
 	}
-}
-
-func TestConfigWatcher_TrimWhitespace(t *testing.T) {
-	dir := t.TempDir()
-	// ConfigMap volumes sometimes have trailing newlines
-	if err := os.WriteFile(filepath.Join(dir, "command-prefix"), []byte("kubectl \n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cw.Stop()
-
-	if got := cw.CommandPrefix(); got != "kubectl" {
-		t.Fatalf("expected trimmed 'kubectl', got %q", got)
-	}
-}
-
-// =============================================================================
-// deny-patterns TESTS
-// =============================================================================
-
-func TestConfigWatcher_DenyPatterns_InitialLoad(t *testing.T) {
-	dir := t.TempDir()
-	patterns := "git -C * push * main\ngit -C * push * master\n"
-	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(patterns), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cw.Stop()
-
-	got := cw.DenyPatterns()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 deny patterns, got %d: %v", len(got), got)
-	}
-	if got[0] != "git -C * push * main" {
-		t.Fatalf("expected first pattern 'git -C * push * main', got %q", got[0])
-	}
-	if got[1] != "git -C * push * master" {
-		t.Fatalf("expected second pattern 'git -C * push * master', got %q", got[1])
-	}
-}
-
-func TestConfigWatcher_DenyPatterns_Empty(t *testing.T) {
-	dir := t.TempDir()
-	// No deny-patterns file
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cw.Stop()
-
-	got := cw.DenyPatterns()
-	if got != nil {
-		t.Fatalf("expected nil deny patterns when file doesn't exist, got %v", got)
-	}
-}
-
-func TestConfigWatcher_DenyPatterns_SkipsCommentsAndBlanks(t *testing.T) {
-	dir := t.TempDir()
-	patterns := "# This is a comment\ngit -C * push * main\n\n  \n# Another comment\ngit -C * push * master\n"
-	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(patterns), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cw.Stop()
-
-	got := cw.DenyPatterns()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 patterns (skipping comments/blanks), got %d: %v", len(got), got)
-	}
-}
-
-func TestConfigWatcher_DenyPatterns_HotReload(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte("git -C * push * main"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cw.Start()
-	defer cw.Stop()
-
-	got := cw.DenyPatterns()
-	if len(got) != 1 {
-		t.Fatalf("expected 1 initial pattern, got %d", len(got))
-	}
-
-	// Set up reload detection
-	reloaded := make(chan string, 1)
-	cw.SetOnReload(func(key, value string) {
-		if key == "deny-patterns" {
-			reloaded <- value
-		}
-	})
-
-	// Update the file
-	newPatterns := "git -C * push * main\ngit -C * push * master\ngit -C * push --force *"
-	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte(newPatterns), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-reloaded:
-		// ok
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for deny-patterns reload")
-	}
-
-	got = cw.DenyPatterns()
-	if len(got) != 3 {
-		t.Fatalf("expected 3 patterns after reload, got %d: %v", len(got), got)
-	}
-}
-
-func TestConfigWatcher_DenyPatterns_ConcurrentAccess(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "deny-patterns"), []byte("git -C * push * main"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	cw, err := NewConfigWatcher(dir, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cw.Start()
-	defer cw.Stop()
-
-	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				_ = cw.DenyPatterns()
-			}
-		}()
-	}
-	wg.Wait()
 }
 
 // =============================================================================

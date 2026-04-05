@@ -27,11 +27,9 @@ type ConfigWatcher struct {
 	done    chan struct{}
 	started bool
 
-	mu            sync.RWMutex
-	commandPrefix string
-	denyPatterns  []string                   // wildcard patterns from the deny-patterns ConfigMap key
-	mcpDenyRules  []cmdvalidator.MCPDenyRule // parsed MCP deny rules from the mcp-deny-rules ConfigMap key
-	onReload      func(key, value string)    // optional callback for testing/extensibility
+	mu           sync.RWMutex
+	mcpDenyRules []cmdvalidator.MCPDenyRule // parsed MCP deny rules from the mcp-deny-rules ConfigMap key
+	onReload     func(key, value string)    // optional callback for testing/extensibility
 }
 
 // NewConfigWatcher creates a watcher for the given directory.
@@ -76,21 +74,6 @@ func (cw *ConfigWatcher) Stop() {
 	if cw.started {
 		<-cw.done
 	}
-}
-
-// CommandPrefix returns the current command prefix (thread-safe).
-func (cw *ConfigWatcher) CommandPrefix() string {
-	cw.mu.RLock()
-	defer cw.mu.RUnlock()
-	return cw.commandPrefix
-}
-
-// DenyPatterns returns the current deny patterns (thread-safe).
-// Returns nil if no deny-patterns file exists.
-func (cw *ConfigWatcher) DenyPatterns() []string {
-	cw.mu.RLock()
-	defer cw.mu.RUnlock()
-	return cw.denyPatterns
 }
 
 // MCPDenyRules returns the current MCP deny rules (thread-safe).
@@ -164,52 +147,6 @@ func (cw *ConfigWatcher) run() {
 }
 
 func (cw *ConfigWatcher) loadAll() {
-	cw.loadFile("command-prefix", func(value string) {
-		cw.mu.Lock()
-		old := cw.commandPrefix
-		cw.commandPrefix = value
-		fn := cw.onReload
-		cw.mu.Unlock()
-
-		if old != value {
-			cw.logger.Info("command-prefix reloaded",
-				"old", old,
-				"new", value,
-			)
-		}
-		if fn != nil {
-			fn("command-prefix", value)
-		}
-	})
-
-	cw.loadFile("deny-patterns", func(value string) {
-		var patterns []string
-		if value != "" {
-			for _, line := range strings.Split(value, "\n") {
-				line = strings.TrimSpace(line)
-				if line != "" && !strings.HasPrefix(line, "#") {
-					patterns = append(patterns, line)
-				}
-			}
-		}
-
-		cw.mu.Lock()
-		old := cw.denyPatterns
-		cw.denyPatterns = patterns
-		fn := cw.onReload
-		cw.mu.Unlock()
-
-		if len(old) != len(patterns) {
-			cw.logger.Info("deny-patterns reloaded",
-				"old_count", len(old),
-				"new_count", len(patterns),
-			)
-		}
-		if fn != nil {
-			fn("deny-patterns", value)
-		}
-	})
-
 	cw.loadFile("mcp-deny-rules", func(value string) {
 		rules, errs := cmdvalidator.ParseMCPDenyRules(value)
 		for _, err := range errs {

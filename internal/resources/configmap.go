@@ -25,26 +25,11 @@ func HashConfigMapData(data map[string]string) string {
 	return hex.EncodeToString(hash[:8]) // 16 hex chars for brevity
 }
 
-// SourceInfo contains resolved Source information for config generation
+// SourceInfo is retained for backwards compatibility with Container capabilities.
+// Container capabilities are no longer deployed as sidecars, but the type is kept
+// so existing code that references it still compiles. It is not used at runtime.
 type SourceInfo struct {
-	// Name is the source name
 	Name string
-	// Type is the source type (kubernetes, github, gitlab, git, custom)
-	Type string
-	// Description explains what the source provides
-	Description string
-	// ServiceURL is the resolved service URL (e.g., http://agent-kubectl.default.svc:8080)
-	ServiceURL string
-	// CommandPrefix is prepended to commands (e.g., "kubectl ")
-	CommandPrefix string
-	// Instructions are additional usage instructions
-	Instructions string
-	// Allow patterns for command validation
-	Allow []string
-	// Deny patterns for command validation
-	Deny []string
-	// ApproveRules are patterns that require human approval before execution
-	ApproveRules []ApprovalRuleInfo
 }
 
 // ApprovalRuleInfo contains approval rule info for config generation
@@ -227,200 +212,12 @@ export const TelemetryPlugin = async ({ client }) => {
 export default TelemetryPlugin
 `
 
-// GenerateSourceTool generates a TypeScript file for an OpenCode custom tool.
-// This makes the source appear as a first-class tool to the LLM.
-// Uses OpenCode's native ctx.ask() for permission prompts (Allow Once / Always Allow / Deny).
-// The capability-gateway sidecar remains as a security backstop for deny-list enforcement.
-//
-// When deny patterns are present, the generated alwaysPattern function is deny-aware:
-// it checks that the candidate "Always Allow" pattern would not match any denied command,
-// preventing the runtime "Always Allow" approval from overriding deny rules via findLast().
-func GenerateSourceTool(src SourceInfo) string {
-	argName := "command"
-
-	// Build the command construction logic
-	commandExpr := fmt.Sprintf("args.%s", argName)
-	if src.CommandPrefix != "" {
-		commandExpr = fmt.Sprintf(`"%s" + args.%s`, src.CommandPrefix, argName)
-	}
-
-	// Escape any special characters in the description for JavaScript string
-	description := strings.ReplaceAll(src.Description, "`", "\\`")
-	description = strings.ReplaceAll(description, "$", "\\$")
-
-	argDescription := fmt.Sprintf("The %s command to execute", src.Name)
-
-	// Build the deny patterns array for the generated code.
-	// These are the full patterns (with command prefix already applied).
-	var denyPatternsJS string
-	if len(src.Deny) > 0 {
-		var parts []string
-		for _, pattern := range src.Deny {
-			fullPattern := pattern
-			if src.CommandPrefix != "" {
-				fullPattern = src.CommandPrefix + pattern
-			}
-			// JSON-encode to handle special chars safely
-			encoded, _ := json.Marshal(fullPattern)
-			parts = append(parts, string(encoded))
-		}
-		denyPatternsJS = strings.Join(parts, ", ")
-	}
-
-	// Choose which alwaysPattern implementation to use
-	var alwaysPatternBlock string
-	if len(src.Deny) > 0 {
-		// Deny-aware version: includes wildcardMatch and checks candidates against deny patterns
-		alwaysPatternBlock = fmt.Sprintf(`
-const DENY_PATTERNS: string[] = [%s]
-
-/**
- * Wildcard match — same semantics as OpenCode's Wildcard.match.
- * "*" matches any chars, "?" matches one char, trailing " *" is optional.
- */
-function wildcardMatch(str: string, pattern: string): boolean {
-  str = str.replace(/\\/g, "/")
-  pattern = pattern.replace(/\\/g, "/")
-  // Escape regex-special chars EXCEPT * and ? (which are wildcard operators)
-  let escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-  // Now convert wildcard operators to regex
-  escaped = escaped.replace(/\*/g, ".*").replace(/\?/g, ".")
-  if (escaped.endsWith(" .*")) {
-    escaped = escaped.slice(0, -3) + "( .*)?"
-  }
-  return new RegExp("^" + escaped + "$").test(str)
-}
-
-/**
- * Check if a candidate "Always Allow" pattern could match any denied command.
- * We test by generating a representative denied command from each deny pattern
- * (replacing wildcards with concrete tokens) and checking if the candidate
- * pattern would match it.
- */
-function wouldMatchDenied(candidate: string): boolean {
-  for (const denyPattern of DENY_PATTERNS) {
-    // A deny pattern like "git -C * push * main" represents a class of commands.
-    // If our candidate "git -C *" (with trailing " *" optional) would match
-    // a concrete instance of the denied command, it's too broad.
-    // Simple check: generate a concrete example from the deny pattern
-    // by replacing "*" with "x" and "?" with "y", then test the candidate against it.
-    const concrete = denyPattern.replace(/\*/g, "x").replace(/\?/g, "y")
-    if (wildcardMatch(concrete, candidate)) {
-      return true
-    }
-    // Also check if the candidate pattern is a prefix-match of the deny pattern.
-    // e.g., candidate "git -C *" matches "git -C /path push origin main"
-    // We test against a more realistic concrete example too.
-    const concrete2 = denyPattern.replace(/\*/g, "some/path").replace(/\?/g, "z")
-    if (wildcardMatch(concrete2, candidate)) {
-      return true
-    }
-  }
-  return false
-}
-
-/**
- * Generate a deny-aware "Always Allow" pattern from a command.
- * Starts with 2-token prefix + " *" (like BashArity), then progressively
- * adds more tokens until the pattern doesn't overlap with deny patterns.
- * Falls back to the exact command if no safe prefix is found.
- */
-function alwaysPattern(command: string): string {
-  const tokens = command.trim().split(/\s+/)
-
-  // Try increasingly specific prefixes: 2 tokens, 3 tokens, ...
-  for (let n = Math.min(2, tokens.length); n < tokens.length; n++) {
-    const candidate = tokens.slice(0, n).join(" ") + " *"
-    if (!wouldMatchDenied(candidate)) {
-      return candidate
-    }
-  }
-
-  // No safe prefix found — fall back to exact command.
-  // This means "Always Allow" only approves this exact command, which is safe
-  // because deny patterns only match broad classes.
-  return command
-}`, denyPatternsJS)
-	} else {
-		// Simple version (no deny patterns): classic BashArity logic
-		alwaysPatternBlock = `
-/**
- * Generate the "Always Allow" pattern from a command.
- * Uses BashArity-style logic: take the first 2 tokens (e.g. "kubectl get")
- * and append " *" so clicking "Always Allow" approves all similar commands.
- * Example: "kubectl get pods -A -o wide" -> "kubectl get *"
- */
-function alwaysPattern(command: string): string {
-  const tokens = command.trim().split(/\s+/)
-  const prefixLen = Math.min(2, tokens.length)
-  return tokens.slice(0, prefixLen).join(" ") + " *"
-}`
-	}
-
-	return fmt.Sprintf(`/**
- * OpenCode Custom Tool: %s
- * Auto-generated by Agent Operator
- * Uses OpenCode's native permission system (ctx.ask) for approval prompts.
- * The capability-gateway sidecar enforces deny-lists as a security backstop.
- */
-import { tool } from "@opencode-ai/plugin"
-
-const SERVICE_URL = "%s"
-%s
-
-export default tool({
-  description: `+"`%s`"+`,
-  args: {
-    %s: tool.schema.string().describe(`+"`%s`"+`),
-  },
-  async execute(args, ctx) {
-    const command = %s
-
-    // Ask OpenCode for permission — shows inline UI prompt with
-    // "Allow Once / Always Allow / Deny" buttons on the tool call card.
-    // OpenCode evaluates against permission rules in opencode.json.
-    // If rules say "allow", this resolves immediately (no prompt).
-    // If rules say "deny", this throws DeniedError (no prompt).
-    // If rules say "ask" (or no rule matches), the user sees the prompt.
-    await ctx.ask({
-      permission: "%s",
-      patterns: [command],
-      always: [alwaysPattern(command)],
-      metadata: { command },
-    })
-
-    // Execute via capability-gateway sidecar (security backstop).
-    // The gateway enforces deny-lists and command prefix requirements
-    // even if the permission prompt was bypassed.
-    const response = await fetch(SERVICE_URL + "/exec", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command }),
-    })
-
-    const result = await response.json()
-
-    if (!response.ok) {
-      throw new Error(result.error || response.statusText)
-    }
-
-    if (result.stderr && result.stderr.length > 0) {
-      return result.stdout + "\n\nSTDERR:\n" + result.stderr
-    }
-    return result.stdout || ""
-  },
-})
-`, src.Name, src.ServiceURL, alwaysPatternBlock, description, argName, argDescription, commandExpr, src.Name)
-}
-
 // AgentConfigMap creates a ConfigMap for the agent
-// sources contains resolved Container capability information to inject into systemPrompt
 // mcpEntries contains resolved MCP capability entries for opencode.json
 // skillFiles contains resolved Skill capability content (name -> SKILL.md content)
-// toolFiles contains resolved Tool capability code (name -> TypeScript code)
 // pluginFiles contains resolved Plugin capability code (name -> TypeScript code)
 // pluginPackages contains npm package names for Plugin capabilities
-func AgentConfigMap(agent *agentsv1alpha1.Agent, sources []SourceInfo, mcpEntries map[string]MCPEntry, skillFiles map[string]string, toolFiles map[string]string, pluginFiles map[string]string, pluginPackages []string) *corev1.ConfigMap {
+func AgentConfigMap(agent *agentsv1alpha1.Agent, mcpEntries map[string]MCPEntry, skillFiles map[string]string, pluginFiles map[string]string, pluginPackages []string) *corev1.ConfigMap {
 	// Build opencode.json config
 	// Note: Provider API keys are passed via environment variables (e.g., ANTHROPIC_API_KEY)
 	// OpenCode auto-enables providers when their API keys are present
@@ -588,30 +385,8 @@ func AgentConfigMap(agent *agentsv1alpha1.Agent, sources []SourceInfo, mcpEntrie
 		}
 	}
 
-	// Generate custom tool files for Container capability sources
-	// These become first-class tools in OpenCode via auto-discovery from tools/ directory
+	// Build tool code map (currently empty — Container source tools have been removed)
 	toolCodeMap := make(map[string]string)
-	for _, src := range sources {
-		toolCode := GenerateSourceTool(src)
-		if toolCode != "" {
-			toolCodeMap[src.Name+".ts"] = toolCode
-
-			// Generate OpenCode permission rules for this tool.
-			// These rules are evaluated by PermissionNext.evaluate() when the tool calls ctx.ask().
-			// Allow patterns -> auto-approve (no prompt), deny -> auto-reject, ask -> show UI prompt.
-			if len(src.Allow) > 0 || len(src.Deny) > 0 || len(src.ApproveRules) > 0 {
-				if config.Permission == nil {
-					config.Permission = make(map[string]interface{})
-				}
-				config.Permission[src.Name] = buildSourcePermission(src)
-			}
-		}
-	}
-
-	// Add Tool capability files (custom OpenCode tools from Capability CRDs)
-	for name, code := range toolFiles {
-		toolCodeMap[name+".ts"] = code
-	}
 
 	// Add Plugin capability packages to the plugin list
 	for _, pkg := range pluginPackages {
@@ -635,7 +410,7 @@ func AgentConfigMap(agent *agentsv1alpha1.Agent, sources []SourceInfo, mcpEntrie
 	configJSON, _ := json.MarshalIndent(config, "", "  ")
 
 	// Build AGENTS.md - OpenCode's standard file for custom instructions/system prompt
-	agentsMD := buildAgentsMarkdown(agent, sources)
+	agentsMD := buildAgentsMarkdown(agent)
 
 	// Build the ConfigMap data
 	data := map[string]string{
@@ -669,7 +444,7 @@ func AgentConfigMap(agent *agentsv1alpha1.Agent, sources []SourceInfo, mcpEntrie
 	}
 }
 
-func buildAgentsMarkdown(agent *agentsv1alpha1.Agent, sources []SourceInfo) string {
+func buildAgentsMarkdown(agent *agentsv1alpha1.Agent) string {
 	name := agent.Name
 	systemPrompt := ""
 
@@ -686,31 +461,6 @@ func buildAgentsMarkdown(agent *agentsv1alpha1.Agent, sources []SourceInfo) stri
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# %s\n\n%s\n", name, systemPrompt))
-
-	// Document sources (they're first-class tools, just mention them)
-	if len(sources) > 0 {
-		sb.WriteString("\n## Tools\n\n")
-
-		// Collect tool names for the routing instruction
-		var toolNames []string
-		for _, src := range sources {
-			toolNames = append(toolNames, src.Name)
-		}
-
-		// Add explicit tool routing instruction
-		sb.WriteString("**IMPORTANT**: The following custom tools run in dedicated sidecar containers. ")
-		sb.WriteString("Their CLI commands (e.g., glab, helm, kubectl) are NOT available via the built-in `bash` tool. ")
-		sb.WriteString("You MUST use the specific tool listed below to run those commands.\n\n")
-
-		for _, src := range sources {
-			sb.WriteString(fmt.Sprintf("### %s\n\n", src.Name))
-			if src.Instructions != "" {
-				sb.WriteString(src.Instructions)
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
-		}
-	}
 
 	return sb.String()
 }
@@ -781,85 +531,6 @@ func mergeProtectedPaths(existing interface{}, protectedPaths []string) json.Raw
 		if !strings.Contains(path, "*") {
 			writeEntry(path+"/*", "deny")
 		}
-	}
-
-	sb.WriteString("}")
-	return json.RawMessage(sb.String())
-}
-
-// buildSourcePermission generates OpenCode permission rules for a custom tool source.
-// These rules are evaluated by OpenCode's PermissionNext.evaluate() when the tool calls ctx.ask().
-//
-// OpenCode's pattern matching (Wildcard.match):
-//   - "*" matches everything (like ".*" in regex)
-//   - "kubectl get *" matches "kubectl get pods", "kubectl get pods -A", etc.
-//   - Trailing " *" becomes optional: "kubectl get *" also matches "kubectl get"
-//
-// OpenCode's rule evaluation (PermissionNext.evaluate):
-//   - Uses findLast() — last matching rule wins
-//   - Actions: "allow" (proceed silently), "deny" (throw DeniedError), "ask" (show UI prompt)
-//   - Default when no rule matches: "ask"
-//
-// Strategy:
-//  1. Default "*": "ask" FIRST (if no more-specific rule matches, user gets prompted)
-//  2. Allow patterns → action "allow" (auto-approve matching commands)
-//  3. Approve patterns → action "ask" (explicitly prompt user, even if allow would match)
-//  4. Deny patterns → action "deny" LAST (override everything for dangerous commands)
-//
-// Since findLast() is used, ORDER MATTERS. We return json.RawMessage to preserve
-// insertion order (Go maps randomize iteration order, which would break findLast semantics).
-func buildSourcePermission(src SourceInfo) json.RawMessage {
-	var sb strings.Builder
-	sb.WriteString("{")
-
-	first := true
-	writeEntry := func(pattern, action string) {
-		if !first {
-			sb.WriteString(",")
-		}
-		first = false
-		// JSON-encode the pattern key (handles special chars)
-		keyJSON, _ := json.Marshal(pattern)
-		valJSON, _ := json.Marshal(action)
-		sb.WriteString(string(keyJSON))
-		sb.WriteString(":")
-		sb.WriteString(string(valJSON))
-	}
-
-	// 1. Default: ask for everything (safe default — user sees prompt for unrecognized commands)
-	writeEntry("*", "ask")
-
-	// 2. Allow patterns — auto-approve matching commands (no prompt shown).
-	// Capability CRD patterns don't include the prefix (e.g., "get *" not "kubectl get *"),
-	// so we prepend CommandPrefix to match what ctx.ask() sends as patterns.
-	for _, pattern := range src.Allow {
-		fullPattern := pattern
-		if src.CommandPrefix != "" {
-			fullPattern = src.CommandPrefix + pattern
-		}
-		writeEntry(fullPattern, "allow")
-	}
-
-	// 3. Approve patterns — explicitly prompt user (show UI with Allow/Deny).
-	// These override allow patterns for commands that need human review.
-	// Placed between allow and deny so deny still takes highest priority.
-	for _, rule := range src.ApproveRules {
-		fullPattern := rule.Pattern
-		if src.CommandPrefix != "" {
-			fullPattern = src.CommandPrefix + rule.Pattern
-		}
-		writeEntry(fullPattern, "ask")
-	}
-
-	// 4. Deny patterns — auto-reject matching commands (DeniedError thrown, no prompt).
-	// These come LAST because findLast() gives them highest priority — they override
-	// any allow pattern that might also match the same command.
-	for _, pattern := range src.Deny {
-		fullPattern := pattern
-		if src.CommandPrefix != "" {
-			fullPattern = src.CommandPrefix + pattern
-		}
-		writeEntry(fullPattern, "deny")
 	}
 
 	sb.WriteString("}")

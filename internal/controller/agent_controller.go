@@ -113,12 +113,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile Capabilities (if any capabilityRefs defined)
-	if err := r.reconcileCapabilities(ctx, agent); err != nil {
-		logger.Error(err, "Failed to reconcile Capabilities")
-		return ctrl.Result{}, err
-	}
-
 	// Update status
 	if err := r.updateStatus(ctx, agent); err != nil {
 		logger.Error(err, "Failed to update status")
@@ -135,7 +129,7 @@ func (r *AgentReconciler) reconcileConfigMap(ctx context.Context, agent *agentsv
 		return fmt.Errorf("failed to resolve capabilities: %w", err)
 	}
 
-	desired := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
+	desired := resources.AgentConfigMap(agent, resolved.MCPEntries, resolved.SkillFiles, resolved.PluginFiles, resolved.PluginPackages)
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}
@@ -159,10 +153,6 @@ func (r *AgentReconciler) reconcileConfigMap(ctx context.Context, agent *agentsv
 
 // ResolvedCapabilities holds all resolved capability information for config/deployment generation.
 type ResolvedCapabilities struct {
-	// Sources are Container capabilities converted to SourceInfo (for tool wrappers)
-	Sources []resources.SourceInfo
-	// Sidecars are Container capabilities resolved for sidecar container generation
-	Sidecars []resources.CapabilitySidecarInfo
 	// MCPEntries are MCP capabilities converted to opencode.json MCP entries
 	MCPEntries map[string]resources.MCPEntry
 	// MCPWorkspaces are MCP server capabilities with shared workspace PVCs.
@@ -178,8 +168,6 @@ type ResolvedCapabilities struct {
 	MCPCapabilityHash string
 	// SkillFiles are Skill capabilities with their SKILL.md content (name -> content)
 	SkillFiles map[string]string
-	// ToolFiles are Tool capabilities with their TypeScript code (name -> code)
-	ToolFiles map[string]string
 	// PluginFiles are Plugin capabilities with inline code (name -> code)
 	PluginFiles map[string]string
 	// PluginPackages are Plugin capabilities referencing npm packages
@@ -193,12 +181,8 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 	resolved := &ResolvedCapabilities{
 		MCPEntries:  make(map[string]resources.MCPEntry),
 		SkillFiles:  make(map[string]string),
-		ToolFiles:   make(map[string]string),
 		PluginFiles: make(map[string]string),
 	}
-
-	// Port counter for Container sidecars - starts at 8081
-	nextPort := int32(resources.SidecarBasePort)
 
 	// Collect MCP capability specs for hashing. When any MCP capability changes,
 	// the hash changes and triggers an agent pod rollout — necessary because MCP
@@ -227,20 +211,6 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 		}
 
 		switch capability.Spec.Type {
-		case agentsv1alpha1.CapabilityTypeContainer:
-			port := nextPort
-			nextPort++
-
-			resolved.Sidecars = append(resolved.Sidecars, resources.CapabilitySidecarInfo{
-				Name:          name,
-				Capability:    capability,
-				Port:          port,
-				ConfigMapName: agent.Name + "-" + name + "-config",
-			})
-
-			sourceInfo := resources.ContainerCapabilityToSourceInfo(agent, capability, ref.Alias, port)
-			resolved.Sources = append(resolved.Sources, sourceInfo)
-
 		case agentsv1alpha1.CapabilityTypeMCP:
 			entry := resources.MCPCapabilityToMCPEntry(capability)
 			if entry != nil {
@@ -285,30 +255,6 @@ func (r *AgentReconciler) resolveCapabilities(ctx context.Context, agent *agents
 				}
 				if content != "" {
 					resolved.SkillFiles[name] = content
-				}
-			}
-
-		case agentsv1alpha1.CapabilityTypeTool:
-			if capability.Spec.Tool != nil {
-				code := capability.Spec.Tool.Code
-				if code == "" && capability.Spec.Tool.ConfigMapRef != nil {
-					cm := &corev1.ConfigMap{}
-					cmRef := capability.Spec.Tool.ConfigMapRef
-					if err := r.Get(ctx, types.NamespacedName{Name: cmRef.Name, Namespace: agent.Namespace}, cm); err == nil {
-						code = cm.Data[cmRef.Key]
-					}
-				}
-				if code == "" && capability.Spec.Tool.OCIRef != nil {
-					// Resolve from OCI artifact
-					var err error
-					code, err = r.resolveOCIFileContent(ctx, agent.Namespace, capability.Spec.Tool.OCIRef)
-					if err != nil {
-						logger.Error(err, "Failed to pull tool from OCI artifact", "capability", capability.Name, "ref", capability.Spec.Tool.OCIRef.Ref)
-						continue
-					}
-				}
-				if code != "" {
-					resolved.ToolFiles[name] = code
 				}
 			}
 
@@ -652,61 +598,6 @@ func (r *AgentReconciler) updateStatusWaiting(ctx context.Context, agent *agents
 	return r.Status().Update(ctx, current)
 }
 
-// reconcileCapabilities creates ConfigMaps for each Container capability (for sidecar containers)
-// NOTE: Container capabilities run as sidecars in the Agent pod, not separate deployments
-func (r *AgentReconciler) reconcileCapabilities(ctx context.Context, agent *agentsv1alpha1.Agent) error {
-	for _, ref := range agent.Spec.CapabilityRefs {
-		// Fetch the Capability resource
-		capability := &agentsv1alpha1.Capability{}
-		err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: agent.Namespace}, capability)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				log.FromContext(ctx).Info("Capability not found, skipping", "capability", ref.Name)
-				continue
-			}
-			return fmt.Errorf("failed to get capability %s: %w", ref.Name, err)
-		}
-
-		// Check if capability is ready
-		if capability.Status.Phase != agentsv1alpha1.CapabilityPhaseReady {
-			log.FromContext(ctx).Info("Capability not ready, skipping", "capability", ref.Name, "phase", capability.Status.Phase)
-			continue
-		}
-
-		// Only Container capabilities need a ConfigMap for their sidecar
-		if capability.Spec.Type == agentsv1alpha1.CapabilityTypeContainer {
-			if err := r.reconcileCapabilityConfigMap(ctx, agent, capability, ref.Alias); err != nil {
-				return fmt.Errorf("failed to reconcile capability %s configmap: %w", ref.Name, err)
-			}
-		}
-	}
-
-	return nil
-}
-
-func (r *AgentReconciler) reconcileCapabilityConfigMap(ctx context.Context, agent *agentsv1alpha1.Agent, capability *agentsv1alpha1.Capability, alias string) error {
-	desired := resources.CapabilityConfigMap(agent, capability, alias)
-	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-
-	// Only update if data changed
-	if !mapsEqual(existing.Data, desired.Data) {
-		existing.Data = desired.Data
-		return r.Update(ctx, existing)
-	}
-	return nil
-}
-
 func (r *AgentReconciler) reconcilePVC(ctx context.Context, agent *agentsv1alpha1.Agent) error {
 	desired := resources.AgentPVC(agent)
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
@@ -735,10 +626,10 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, agent *agents
 	// (triggered by the ConfigMap creation event), the hash changes, which changes
 	// the pod template annotation, which changes the DeploymentSpec hash, causing
 	// a spurious Deployment update and double rollout.
-	desiredConfigMap := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
+	desiredConfigMap := resources.AgentConfigMap(agent, resolved.MCPEntries, resolved.SkillFiles, resolved.PluginFiles, resolved.PluginPackages)
 	configMapHash := resources.HashConfigMapData(desiredConfigMap.Data)
 
-	desired := resources.AgentDeployment(agent, configMapHash, resolved.MCPCapabilityHash, resolved.Sidecars, resolved.MCPWorkspaces, r.resolveGitWorkspaces(ctx, agent))
+	desired := resources.AgentDeployment(agent, configMapHash, resolved.MCPCapabilityHash, resolved.MCPWorkspaces, r.resolveGitWorkspaces(ctx, agent))
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}

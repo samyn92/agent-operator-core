@@ -389,76 +389,6 @@ func TestValidateSkillCapability_NoContentOrRef(t *testing.T) {
 	}
 }
 
-// --- Tool type validation ---
-
-func TestValidateToolCapability_ValidInlineCode(t *testing.T) {
-	r := &CapabilityReconciler{}
-	cap := &agentsv1alpha1.Capability{
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "K8s health check tool",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				Code: `import { tool } from "@opencode-ai/plugin"; export default tool({...})`,
-			},
-		},
-	}
-
-	if err := r.validateCapability(cap); err != nil {
-		t.Fatalf("expected no error, got: %s", err)
-	}
-}
-
-func TestValidateToolCapability_ValidConfigMapRef(t *testing.T) {
-	r := &CapabilityReconciler{}
-	cap := &agentsv1alpha1.Capability{
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Jira lookup tool",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				ConfigMapRef: &agentsv1alpha1.ConfigMapKeyRef{
-					Name: "jira-tool",
-					Key:  "tool.ts",
-				},
-			},
-		},
-	}
-
-	if err := r.validateCapability(cap); err != nil {
-		t.Fatalf("expected no error, got: %s", err)
-	}
-}
-
-func TestValidateToolCapability_MissingSpec(t *testing.T) {
-	r := &CapabilityReconciler{}
-	cap := &agentsv1alpha1.Capability{
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Test",
-		},
-	}
-
-	err := r.validateCapability(cap)
-	if err == nil {
-		t.Fatal("expected error for missing tool spec")
-	}
-}
-
-func TestValidateToolCapability_NoCodeOrRef(t *testing.T) {
-	r := &CapabilityReconciler{}
-	cap := &agentsv1alpha1.Capability{
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Test",
-			Tool:        &agentsv1alpha1.ToolCapabilitySpec{},
-		},
-	}
-
-	err := r.validateCapability(cap)
-	if err == nil {
-		t.Fatal("expected error for tool with no code or configMapRef")
-	}
-}
-
 // --- Plugin type validation ---
 
 func TestValidatePluginCapability_ValidInlineCode(t *testing.T) {
@@ -625,25 +555,6 @@ func TestValidateSkillCapability_OCIRefInvalidDigest(t *testing.T) {
 	err := r.validateCapability(cap)
 	if err == nil {
 		t.Fatal("expected error for invalid digest format")
-	}
-}
-
-func TestValidateToolCapability_ValidOCIRef(t *testing.T) {
-	r := &CapabilityReconciler{}
-	cap := &agentsv1alpha1.Capability{
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Tool from OCI artifact",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				OCIRef: &agentsv1alpha1.OCIArtifactRef{
-					Ref: "ghcr.io/org/tools/health-check:latest",
-				},
-			},
-		},
-	}
-
-	if err := r.validateCapability(cap); err != nil {
-		t.Fatalf("expected no error, got: %s", err)
 	}
 }
 
@@ -823,45 +734,6 @@ func TestCapabilityReconcile_ValidSkill_BecomesReady(t *testing.T) {
 
 	updated := &agentsv1alpha1.Capability{}
 	_ = client.Get(context.Background(), types.NamespacedName{Name: "test-skill", Namespace: "default"}, updated)
-	if updated.Status.Phase != agentsv1alpha1.CapabilityPhaseReady {
-		t.Fatalf("expected phase Ready, got %s", updated.Status.Phase)
-	}
-}
-
-func TestCapabilityReconcile_ValidTool_BecomesReady(t *testing.T) {
-	scheme := newTestScheme()
-
-	cap := &agentsv1alpha1.Capability{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-tool",
-			Namespace: "default",
-		},
-		Spec: agentsv1alpha1.CapabilitySpec{
-			Type:        agentsv1alpha1.CapabilityTypeTool,
-			Description: "Health check tool",
-			Tool: &agentsv1alpha1.ToolCapabilitySpec{
-				Code: `import { tool } from "@opencode-ai/plugin"; export default tool({...})`,
-			},
-		},
-	}
-
-	client := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cap).
-		WithStatusSubresource(cap).
-		Build()
-
-	r := &CapabilityReconciler{Client: client, Scheme: scheme}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "test-tool", Namespace: "default"},
-	})
-	if err != nil {
-		t.Fatalf("reconcile failed: %s", err)
-	}
-
-	updated := &agentsv1alpha1.Capability{}
-	_ = client.Get(context.Background(), types.NamespacedName{Name: "test-tool", Namespace: "default"}, updated)
 	if updated.Status.Phase != agentsv1alpha1.CapabilityPhaseReady {
 		t.Fatalf("expected phase Ready, got %s", updated.Status.Phase)
 	}

@@ -25,23 +25,18 @@ import (
 //     Mounted into the agent pod at .opencode/skills/<name>/SKILL.md.
 //     Loaded on-demand via the native skill tool.
 //
-//   - Tool: An OpenCode Custom Tool (TypeScript/JS).
-//     Mounted into the agent pod at .opencode/tools/<name>.ts.
-//     Auto-discovered by OpenCode's tool system.
-//
 //   - Plugin: An OpenCode Plugin (TypeScript/JS module or npm package).
 //     Hooks into agent lifecycle events (tool.execute.before, tool.execute.after, etc.).
 //     Mounted into .opencode/plugins/ or installed from npm.
 
 // CapabilityType identifies the kind of capability
-// +kubebuilder:validation:Enum=Container;MCP;Skill;Tool;Plugin
+// +kubebuilder:validation:Enum=Container;MCP;Skill;Plugin
 type CapabilityType string
 
 const (
 	CapabilityTypeContainer CapabilityType = "Container"
 	CapabilityTypeMCP       CapabilityType = "MCP"
 	CapabilityTypeSkill     CapabilityType = "Skill"
-	CapabilityTypeTool      CapabilityType = "Tool"
 	CapabilityTypePlugin    CapabilityType = "Plugin"
 )
 
@@ -75,11 +70,6 @@ type CapabilitySpec struct {
 	// Required when type is "Skill".
 	// +optional
 	Skill *SkillCapabilitySpec `json:"skill,omitempty"`
-
-	// Tool configures an OpenCode Custom Tool capability.
-	// Required when type is "Tool".
-	// +optional
-	Tool *ToolCapabilitySpec `json:"tool,omitempty"`
 
 	// Plugin configures an OpenCode Plugin capability.
 	// Required when type is "Plugin".
@@ -364,32 +354,6 @@ type SkillCapabilitySpec struct {
 	// The artifact must conform to the Agent Skills OCI Artifacts spec
 	// (application/vnd.agentskills.skill.v1 artifact type).
 	// Exactly one of content, configMapRef, or ociRef must be specified.
-	// +optional
-	OCIRef *OCIArtifactRef `json:"ociRef,omitempty"`
-}
-
-// =============================================================================
-// TOOL CAPABILITY (OpenCode Custom Tool)
-// =============================================================================
-
-// ToolCapabilitySpec configures an OpenCode Custom Tool.
-// Custom Tools are TypeScript/JS files that use the tool() helper from @opencode-ai/plugin.
-// They are auto-discovered from .opencode/tools/ directory.
-type ToolCapabilitySpec struct {
-	// Code is the inline TypeScript/JavaScript source code for the tool.
-	// Should export a default using tool() from @opencode-ai/plugin.
-	// Exactly one of code, configMapRef, or ociRef must be specified.
-	// +optional
-	Code string `json:"code,omitempty"`
-
-	// ConfigMapRef references a ConfigMap containing the tool source code.
-	// Exactly one of code, configMapRef, or ociRef must be specified.
-	// +optional
-	ConfigMapRef *ConfigMapKeyRef `json:"configMapRef,omitempty"`
-
-	// OCIRef references an OCI artifact containing the tool source code.
-	// The artifact should contain a single .ts/.js file as a layer.
-	// Exactly one of code, configMapRef, or ociRef must be specified.
 	// +optional
 	OCIRef *OCIArtifactRef `json:"ociRef,omitempty"`
 }

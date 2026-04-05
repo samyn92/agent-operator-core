@@ -1,30 +1,20 @@
 // Package main provides the capability-gateway binary.
 //
-// The capability-gateway is a unified gateway for all capability types that need
-// an IO proxy between the agent and a capability backend. It supports two modes:
+// The capability-gateway bridges MCP stdio servers to HTTP/SSE, providing a
+// network-accessible endpoint for operator-managed MCP server pods.
 //
-//   - cli: REST endpoint (/exec) that validates and executes commands.
-//     Used for Container-type capabilities (kubectl, gh, glab sidecars).
-//     Enforces command prefix, deny patterns, rate limiting, audit.
-//     Commands are executed via exec.CommandContext (no shell).
-//
-//   - mcp: SSE endpoint (/sse) that bridges MCP stdio servers to HTTP/SSE.
-//     Used for server-mode MCP capabilities (operator-managed MCP server pods).
-//     Spawns the MCP server subprocess and bridges JSON-RPC over SSE.
-//
-// Both modes share the same security middleware (rate limiting, audit logging,
-// health checks) and are configured via environment variables.
+// It exposes SSE endpoints (/sse, /message) that spawn the MCP server subprocess
+// and bridge JSON-RPC over SSE. Shared security middleware (rate limiting, audit
+// logging, health checks) is applied to all requests.
 //
 // Environment variables:
 //
-//	GATEWAY_MODE     - "cli" or "mcp" (default: "cli")
 //	GATEWAY_PORT     - HTTP port (default: 8080, also reads TOOL_PORT for compat)
-//	GATEWAY_COMMAND  - MCP server command to spawn (mcp mode only)
+//	GATEWAY_COMMAND  - MCP server command to spawn
 //	TOOL_NAME        - Capability name for logging
 //	TOOL_PORT        - Port alias (alternative to GATEWAY_PORT)
-//	WORKSPACE_PATH   - Working directory for CLI commands (cli mode only)
-//	RATE_LIMIT_RPM   - Requests per minute limit (both modes)
-//	AUDIT_ENABLED    - Enable audit logging (both modes)
+//	RATE_LIMIT_RPM   - Requests per minute limit
+//	AUDIT_ENABLED    - Enable audit logging
 package main
 
 import (
@@ -38,7 +28,6 @@ import (
 	"time"
 
 	"github.com/samyn92/agent-operator-core/pkg/gateway"
-	"github.com/samyn92/agent-operator-core/pkg/gateway/cli"
 	"github.com/samyn92/agent-operator-core/pkg/gateway/mcp"
 )
 
@@ -51,7 +40,6 @@ func main() {
 	config := gateway.LoadConfig()
 
 	logger.Info("starting capability-gateway",
-		"mode", config.Mode,
 		"tool", config.ToolName,
 		"port", config.Port,
 		"rate_limit_rpm", config.RateLimitRPM,
@@ -64,71 +52,32 @@ func main() {
 	mux.HandleFunc("GET /healthz", gateway.HealthHandler())
 	mux.HandleFunc("GET /readyz", gateway.HealthHandler())
 
-	// Register mode-specific handlers
-	switch config.Mode {
-	case "cli":
-		// Set up git HTTPS authentication if tokens are available
-		gateway.ConfigureGitAuth(logger)
+	// Set up MCP handler — bridges MCP stdio servers to HTTP/SSE
+	handler := mcp.NewHandler(config, logger)
 
-		handler := cli.NewHandler(config, logger)
-
-		// Start ConfigWatcher for hot-reloading ConfigMap changes (e.g., command-prefix).
-		// This allows permission and config updates to take effect without pod restarts.
-		// The watcher monitors the ConfigMap mount directory for Kubernetes symlink swaps.
-		if config.ConfigPath != "" {
-			cw, err := gateway.NewConfigWatcher(config.ConfigPath, logger)
-			if err != nil {
-				logger.Warn("failed to start config watcher, falling back to static config",
-					"path", config.ConfigPath,
-					"error", err,
-				)
-			} else {
-				cw.Start()
-				handler.SetConfigWatcher(cw)
-				defer cw.Stop()
-				logger.Info("config watcher started", "path", config.ConfigPath)
-			}
+	// Start ConfigWatcher for hot-reloading MCP deny rules.
+	// The watcher monitors the ConfigMap mount directory for Kubernetes symlink swaps
+	// and reloads "mcp-deny-rules" when the ConfigMap is updated.
+	if config.ConfigPath != "" {
+		cw, err := gateway.NewConfigWatcher(config.ConfigPath, logger)
+		if err != nil {
+			logger.Warn("failed to start config watcher, MCP deny rules disabled",
+				"path", config.ConfigPath,
+				"error", err,
+			)
+		} else {
+			cw.Start()
+			handler.SetConfigWatcher(cw)
+			defer cw.Stop()
+			logger.Info("config watcher started for MCP deny rules", "path", config.ConfigPath)
 		}
-
-		handler.Register(mux)
-
-		logger.Info("CLI mode active",
-			"command_prefix", config.CommandPrefix,
-			"workspace_path", config.WorkspacePath,
-		)
-
-	case "mcp":
-		handler := mcp.NewHandler(config, logger)
-
-		// Start ConfigWatcher for hot-reloading MCP deny rules.
-		// MCP mode uses the same ConfigMap mount as CLI mode, but reads
-		// "mcp-deny-rules" instead of "command-prefix" / "deny-patterns".
-		if config.ConfigPath != "" {
-			cw, err := gateway.NewConfigWatcher(config.ConfigPath, logger)
-			if err != nil {
-				logger.Warn("failed to start config watcher, MCP deny rules disabled",
-					"path", config.ConfigPath,
-					"error", err,
-				)
-			} else {
-				cw.Start()
-				handler.SetConfigWatcher(cw)
-				defer cw.Stop()
-				logger.Info("config watcher started for MCP deny rules", "path", config.ConfigPath)
-			}
-		}
-
-		handler.Register(mux)
-
-		logger.Info("MCP mode active",
-			"command", config.Command,
-		)
-
-	default:
-		logger.Error("unknown gateway mode", "mode", config.Mode)
-		fmt.Fprintf(os.Stderr, "unknown GATEWAY_MODE: %q (must be 'cli' or 'mcp')\n", config.Mode)
-		os.Exit(1)
 	}
+
+	handler.Register(mux)
+
+	logger.Info("MCP gateway active",
+		"command", config.Command,
+	)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),

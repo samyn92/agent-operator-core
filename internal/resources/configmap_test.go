@@ -54,7 +54,7 @@ func parseOpenCodeConfig(t *testing.T, data map[string]string) OpenCodeConfig {
 func TestAgentConfigMap_BasicStructure(t *testing.T) {
 	agent := minimalAgent("test-agent")
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 
 	if cm.Name != "test-agent-config" {
 		t.Fatalf("expected name 'test-agent-config', got %q", cm.Name)
@@ -92,7 +92,7 @@ func TestAgentConfigMap_BasicStructure(t *testing.T) {
 
 func TestAgentConfigMap_Labels(t *testing.T) {
 	agent := minimalAgent("test-agent")
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 
 	expected := map[string]string{
 		"app.kubernetes.io/name":       "agent",
@@ -121,7 +121,7 @@ func TestAgentConfigMap_InlineMCPServers(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if len(config.MCP) != 1 {
@@ -150,7 +150,7 @@ func TestAgentConfigMap_CapabilityMCPEntries(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, mcpEntries, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, mcpEntries, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if len(config.MCP) != 1 {
@@ -181,7 +181,7 @@ func TestAgentConfigMap_MCPMerging_CapabilityOverridesInline(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, mcpEntries, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, mcpEntries, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if len(config.MCP) != 1 {
@@ -209,7 +209,7 @@ func TestAgentConfigMap_MCPMerging_MixedSources(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, mcpEntries, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, mcpEntries, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if len(config.MCP) != 2 {
@@ -224,27 +224,8 @@ func TestAgentConfigMap_MCPMerging_MixedSources(t *testing.T) {
 }
 
 // =============================================================================
-// AgentConfigMap — TOOL / SKILL / PLUGIN FILE INJECTION TESTS
+// AgentConfigMap — SKILL / PLUGIN FILE INJECTION TESTS
 // =============================================================================
-
-func TestAgentConfigMap_ToolFileInjection(t *testing.T) {
-	agent := minimalAgent("test-agent")
-
-	toolFiles := map[string]string{
-		"k8s-health": `import { tool } from "@opencode-ai/plugin"; export default tool({name: "k8s-health"})`,
-	}
-
-	cm := AgentConfigMap(agent, nil, nil, nil, toolFiles, nil, nil)
-
-	// Tool files are prefixed with "tool-" and suffixed with ".ts"
-	toolCode, ok := cm.Data["tool-k8s-health.ts"]
-	if !ok {
-		t.Fatal("expected tool file 'tool-k8s-health.ts' in ConfigMap")
-	}
-	if !strings.Contains(toolCode, "k8s-health") {
-		t.Fatal("tool code should contain tool name")
-	}
-}
 
 func TestAgentConfigMap_SkillFileInjection(t *testing.T) {
 	agent := minimalAgent("test-agent")
@@ -253,7 +234,7 @@ func TestAgentConfigMap_SkillFileInjection(t *testing.T) {
 		"incident-responder": "---\nname: incident-responder\n---\n# Incident Response Skill",
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, skillFiles, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, skillFiles, nil, nil)
 
 	// Skill files are prefixed with "skill-" and suffixed with "-SKILL.md"
 	skillContent, ok := cm.Data["skill-incident-responder-SKILL.md"]
@@ -272,7 +253,7 @@ func TestAgentConfigMap_PluginFileInjection(t *testing.T) {
 		"audit-log": `const plugin = (api) => { api.hook("tool.execute.before", async () => {}) }; export default plugin`,
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, pluginFiles, nil)
+	cm := AgentConfigMap(agent, nil, nil, pluginFiles, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	// Plugin files are prefixed with "plugin-" and suffixed with ".ts"
@@ -302,7 +283,7 @@ func TestAgentConfigMap_PluginPackageInjection(t *testing.T) {
 
 	pluginPackages := []string{"@company/opencode-plugin-audit", "@company/opencode-plugin-metrics"}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, pluginPackages)
+	cm := AgentConfigMap(agent, nil, nil, nil, pluginPackages)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	// Plugin packages should be in config.Plugin list (after telemetry)
@@ -321,137 +302,6 @@ func TestAgentConfigMap_PluginPackageInjection(t *testing.T) {
 	}
 }
 
-func TestAgentConfigMap_AllFileTypesSimultaneously(t *testing.T) {
-	agent := minimalAgent("test-agent")
-
-	sources := []SourceInfo{
-		{Name: "kubectl", Type: "kubernetes", Description: "K8s access", ServiceURL: "http://localhost:8081", CommandPrefix: "kubectl "},
-	}
-	mcpEntries := map[string]MCPEntry{
-		"postgres": {Type: "local", Command: []string{"npx", "pg-server"}},
-	}
-	skillFiles := map[string]string{"my-skill": "# Skill Content"}
-	toolFiles := map[string]string{"my-tool": "export default tool({})"}
-	pluginFiles := map[string]string{"my-plugin": "export default plugin"}
-	pluginPackages := []string{"@org/plugin-npm"}
-
-	cm := AgentConfigMap(agent, sources, mcpEntries, skillFiles, toolFiles, pluginFiles, pluginPackages)
-
-	// Check all file types present
-	if _, ok := cm.Data["tool-kubectl.ts"]; !ok {
-		t.Error("missing Container source tool wrapper 'tool-kubectl.ts'")
-	}
-	if _, ok := cm.Data["tool-my-tool.ts"]; !ok {
-		t.Error("missing Tool capability file 'tool-my-tool.ts'")
-	}
-	if _, ok := cm.Data["skill-my-skill-SKILL.md"]; !ok {
-		t.Error("missing Skill capability file 'skill-my-skill-SKILL.md'")
-	}
-	if _, ok := cm.Data["plugin-my-plugin.ts"]; !ok {
-		t.Error("missing Plugin capability file 'plugin-my-plugin.ts'")
-	}
-
-	config := parseOpenCodeConfig(t, cm.Data)
-
-	// Check MCP
-	if _, ok := config.MCP["postgres"]; !ok {
-		t.Error("missing MCP entry 'postgres'")
-	}
-
-	// Check plugin list has telemetry + inline plugin path + npm package
-	pluginPaths := map[string]bool{}
-	for _, p := range config.Plugin {
-		pluginPaths[p] = true
-	}
-	if !pluginPaths["./.opencode/plugins/telemetry.ts"] {
-		t.Error("missing telemetry plugin path")
-	}
-	if !pluginPaths["./.opencode/plugins/my-plugin.ts"] {
-		t.Error("missing inline plugin path")
-	}
-	if !pluginPaths["@org/plugin-npm"] {
-		t.Error("missing npm plugin package")
-	}
-}
-
-// =============================================================================
-// AgentConfigMap — CONTAINER SOURCE TOOL GENERATION
-// =============================================================================
-
-func TestAgentConfigMap_ContainerSourceTool(t *testing.T) {
-	agent := minimalAgent("test-agent")
-
-	sources := []SourceInfo{
-		{
-			Name:          "kubectl",
-			Type:          "kubernetes",
-			Description:   "Kubernetes CLI",
-			ServiceURL:    "http://localhost:8081",
-			CommandPrefix: "kubectl ",
-		},
-	}
-
-	cm := AgentConfigMap(agent, sources, nil, nil, nil, nil, nil)
-
-	toolCode, ok := cm.Data["tool-kubectl.ts"]
-	if !ok {
-		t.Fatal("expected tool wrapper 'tool-kubectl.ts'")
-	}
-	if !strings.Contains(toolCode, "http://localhost:8081") {
-		t.Fatal("tool wrapper should contain service URL")
-	}
-	if !strings.Contains(toolCode, "Kubernetes CLI") {
-		t.Fatal("tool wrapper should contain description")
-	}
-	if !strings.Contains(toolCode, `"kubectl "`) {
-		t.Fatal("tool wrapper should contain command prefix")
-	}
-}
-
-func TestAgentConfigMap_SourceWithPermissions_GeneratesRules(t *testing.T) {
-	agent := minimalAgent("test-agent")
-
-	sources := []SourceInfo{
-		{
-			Name:          "kubectl",
-			ServiceURL:    "http://localhost:8081",
-			CommandPrefix: "kubectl ",
-			Allow:         []string{"get *", "describe *"},
-			Deny:          []string{"delete *"},
-		},
-	}
-
-	cm := AgentConfigMap(agent, sources, nil, nil, nil, nil, nil)
-	config := parseOpenCodeConfig(t, cm.Data)
-
-	if config.Permission == nil {
-		t.Fatal("expected permission rules for source with allow/deny")
-	}
-	kubectlPerm, ok := config.Permission["kubectl"]
-	if !ok {
-		t.Fatal("expected permission entry for 'kubectl'")
-	}
-
-	// Permission is a json.RawMessage — parse it
-	raw, err := json.Marshal(kubectlPerm)
-	if err != nil {
-		t.Fatalf("failed to marshal permission: %s", err)
-	}
-	permStr := string(raw)
-
-	// Check that allow patterns are prefixed with command prefix
-	if !strings.Contains(permStr, "kubectl get *") {
-		t.Fatalf("expected 'kubectl get *' in permissions, got %s", permStr)
-	}
-	if !strings.Contains(permStr, "kubectl describe *") {
-		t.Fatalf("expected 'kubectl describe *' in permissions, got %s", permStr)
-	}
-	// Check deny pattern
-	if !strings.Contains(permStr, "kubectl delete *") {
-		t.Fatalf("expected 'kubectl delete *' in permissions, got %s", permStr)
-	}
-}
-
 // =============================================================================
 // AgentConfigMap — AGENTS.MD GENERATION
 // =============================================================================
@@ -459,7 +309,7 @@ func TestAgentConfigMap_SourceWithPermissions_GeneratesRules(t *testing.T) {
 func TestAgentConfigMap_AgentsMD_DefaultIdentity(t *testing.T) {
 	agent := minimalAgent("my-agent")
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	agentsMD := cm.Data["AGENTS.md"]
 
 	if !strings.Contains(agentsMD, "# my-agent") {
@@ -477,7 +327,7 @@ func TestAgentConfigMap_AgentsMD_CustomIdentity(t *testing.T) {
 		SystemPrompt: "You are an expert SRE engineer.",
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	agentsMD := cm.Data["AGENTS.md"]
 
 	if !strings.Contains(agentsMD, "# SRE Bot") {
@@ -485,35 +335,6 @@ func TestAgentConfigMap_AgentsMD_CustomIdentity(t *testing.T) {
 	}
 	if !strings.Contains(agentsMD, "You are an expert SRE engineer.") {
 		t.Fatal("expected custom system prompt")
-	}
-}
-
-func TestAgentConfigMap_AgentsMD_WithSources(t *testing.T) {
-	agent := minimalAgent("test-agent")
-
-	sources := []SourceInfo{
-		{Name: "kubectl", Description: "K8s CLI", Instructions: "Use for cluster access"},
-		{Name: "gh", Description: "GitHub CLI", Instructions: "Use for PR management"},
-	}
-
-	cm := AgentConfigMap(agent, sources, nil, nil, nil, nil, nil)
-	agentsMD := cm.Data["AGENTS.md"]
-
-	if !strings.Contains(agentsMD, "## Tools") {
-		t.Fatal("expected Tools section")
-	}
-	if !strings.Contains(agentsMD, "### kubectl") {
-		t.Fatal("expected kubectl tool section")
-	}
-	if !strings.Contains(agentsMD, "### gh") {
-		t.Fatal("expected gh tool section")
-	}
-	if !strings.Contains(agentsMD, "Use for cluster access") {
-		t.Fatal("expected kubectl instructions")
-	}
-	// Should contain the routing instruction
-	if !strings.Contains(agentsMD, "NOT available via the built-in `bash` tool") {
-		t.Fatal("expected tool routing instruction in AGENTS.md")
 	}
 }
 
@@ -530,7 +351,7 @@ func TestAgentConfigMap_ToolsConfig(t *testing.T) {
 		Write: &writeDisabled,
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Tools == nil {
@@ -552,7 +373,7 @@ func TestAgentConfigMap_NilToolsConfig(t *testing.T) {
 	agent := minimalAgent("test-agent")
 	// No tools config
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Tools != nil {
@@ -570,7 +391,7 @@ func TestAgentConfigMap_PermissionsConfig_SimpleDefault(t *testing.T) {
 		Bash: &agentsv1alpha1.PermissionRule{Default: "allow"},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Permission == nil {
@@ -599,7 +420,7 @@ func TestAgentConfigMap_PermissionsConfig_WithPatterns(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	bashPerm, ok := config.Permission["bash"]
@@ -629,7 +450,7 @@ func TestAgentConfigMap_SecurityConfig_ProtectedPaths(t *testing.T) {
 		ProtectedPaths: []string{"/etc/secrets", "/var/credentials"},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Permission == nil {
@@ -662,7 +483,7 @@ func TestAgentConfigMap_SecurityConfig_ExternalDirectory(t *testing.T) {
 		DoomLoop:          "ask",
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Permission["external_directory"] != "deny" {
@@ -687,7 +508,7 @@ func TestAgentConfigMap_AgentModeConfig(t *testing.T) {
 		Temperature: &temp,
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Agent == nil {
@@ -724,7 +545,7 @@ func TestAgentConfigMap_CustomProvider(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	if config.Provider == nil {
@@ -752,7 +573,7 @@ func TestAgentConfigMap_CloudProviderNoConfig(t *testing.T) {
 		{Name: "openai", APIKeySecret: &agentsv1alpha1.SecretKeySelector{Name: "openai-key", Key: "key"}},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	// Cloud provider without baseURL/headers should not appear in config
@@ -778,7 +599,7 @@ func TestAgentConfigMap_ModelLimitOnlyContext(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	model, ok := config.Provider["custom"].Models["my-model"]
@@ -805,7 +626,7 @@ func TestAgentConfigMap_ModelLimitBothSet(t *testing.T) {
 		},
 	}
 
-	cm := AgentConfigMap(agent, nil, nil, nil, nil, nil, nil)
+	cm := AgentConfigMap(agent, nil, nil, nil, nil)
 	config := parseOpenCodeConfig(t, cm.Data)
 
 	model, ok := config.Provider["custom"].Models["my-model"]
@@ -853,219 +674,6 @@ func TestHashConfigMapData_DifferentDataDifferentHash(t *testing.T) {
 
 	if hash1 == hash2 {
 		t.Fatal("expected different hashes for different data")
-	}
-}
-
-// =============================================================================
-// GenerateSourceTool TESTS
-// =============================================================================
-
-func TestGenerateSourceTool_Basic(t *testing.T) {
-	src := SourceInfo{
-		Name:          "kubectl",
-		Description:   "Kubernetes CLI tool",
-		ServiceURL:    "http://localhost:8081",
-		CommandPrefix: "kubectl ",
-	}
-
-	code := GenerateSourceTool(src)
-
-	if !strings.Contains(code, "http://localhost:8081") {
-		t.Fatal("expected service URL in wrapper")
-	}
-	if !strings.Contains(code, "Kubernetes CLI tool") {
-		t.Fatal("expected description in wrapper")
-	}
-	if !strings.Contains(code, `"kubectl "`) {
-		t.Fatal("expected command prefix in wrapper")
-	}
-	if !strings.Contains(code, `import { tool } from "@opencode-ai/plugin"`) {
-		t.Fatal("expected import statement")
-	}
-	if !strings.Contains(code, "ctx.ask") {
-		t.Fatal("expected ctx.ask permission call")
-	}
-	if !strings.Contains(code, "/exec") {
-		t.Fatal("expected /exec endpoint call")
-	}
-}
-
-func TestGenerateSourceTool_NoPrefix(t *testing.T) {
-	src := SourceInfo{
-		Name:        "custom-tool",
-		Description: "A custom tool",
-		ServiceURL:  "http://localhost:8082",
-	}
-
-	code := GenerateSourceTool(src)
-
-	// Without prefix, command expression should be just args.command
-	if strings.Contains(code, `"" + args.command`) {
-		t.Fatal("should not have empty prefix in expression")
-	}
-	if !strings.Contains(code, "args.command") {
-		t.Fatal("expected args.command in expression")
-	}
-}
-
-func TestGenerateSourceTool_SpecialCharsInDescription(t *testing.T) {
-	src := SourceInfo{
-		Name:        "special",
-		Description: "Tool with `backticks` and $dollar signs",
-		ServiceURL:  "http://localhost:8081",
-	}
-
-	code := GenerateSourceTool(src)
-
-	// Backticks and dollars should be escaped for JS template literal
-	if strings.Contains(code, "`backticks`") {
-		t.Fatal("backticks should be escaped")
-	}
-	// The escaped form \$dollar contains "$dollar" as a substring, so we
-	// check that the escaped form IS present rather than the raw form absent.
-	if !strings.Contains(code, `\$dollar`) {
-		t.Fatal("dollar signs should be escaped to \\$")
-	}
-}
-
-func TestGenerateSourceTool_WithDenyPatterns(t *testing.T) {
-	src := SourceInfo{
-		Name:          "git",
-		Description:   "Git CLI for repository operations",
-		ServiceURL:    "http://localhost:8081",
-		CommandPrefix: "git -C /workspace ",
-		Deny:          []string{"push * main", "push * master", "push --force *"},
-	}
-
-	code := GenerateSourceTool(src)
-
-	// Should contain deny patterns array
-	if !strings.Contains(code, "DENY_PATTERNS") {
-		t.Fatal("expected DENY_PATTERNS constant in deny-aware code")
-	}
-	// Should contain the full (prefixed) deny patterns
-	if !strings.Contains(code, "git -C /workspace push * main") {
-		t.Fatal("expected prefixed deny pattern for push main")
-	}
-	if !strings.Contains(code, "git -C /workspace push * master") {
-		t.Fatal("expected prefixed deny pattern for push master")
-	}
-	if !strings.Contains(code, "git -C /workspace push --force *") {
-		t.Fatal("expected prefixed deny pattern for force push")
-	}
-	// Should contain wildcardMatch function
-	if !strings.Contains(code, "function wildcardMatch") {
-		t.Fatal("expected wildcardMatch function in deny-aware code")
-	}
-	// Should contain wouldMatchDenied function
-	if !strings.Contains(code, "function wouldMatchDenied") {
-		t.Fatal("expected wouldMatchDenied function in deny-aware code")
-	}
-	// Should still have the standard tool structure
-	if !strings.Contains(code, "ctx.ask") {
-		t.Fatal("expected ctx.ask permission call")
-	}
-	if !strings.Contains(code, "alwaysPattern(command)") {
-		t.Fatal("expected alwaysPattern call in ctx.ask")
-	}
-}
-
-func TestGenerateSourceTool_NoDenyPatterns(t *testing.T) {
-	src := SourceInfo{
-		Name:          "kubectl",
-		Description:   "Kubernetes CLI tool",
-		ServiceURL:    "http://localhost:8081",
-		CommandPrefix: "kubectl ",
-	}
-
-	code := GenerateSourceTool(src)
-
-	// Without deny patterns, should use the simple alwaysPattern
-	if strings.Contains(code, "DENY_PATTERNS") {
-		t.Fatal("should NOT contain DENY_PATTERNS when no deny patterns")
-	}
-	if strings.Contains(code, "wildcardMatch") {
-		t.Fatal("should NOT contain wildcardMatch when no deny patterns")
-	}
-	// Should still have alwaysPattern
-	if !strings.Contains(code, "function alwaysPattern") {
-		t.Fatal("expected alwaysPattern function")
-	}
-}
-
-// =============================================================================
-// buildSourcePermission TESTS
-// =============================================================================
-
-func TestBuildSourcePermission_AllowAndDeny(t *testing.T) {
-	src := SourceInfo{
-		Name:          "kubectl",
-		CommandPrefix: "kubectl ",
-		Allow:         []string{"get *", "describe *"},
-		Deny:          []string{"delete *"},
-	}
-
-	raw := buildSourcePermission(src)
-	permStr := string(raw)
-
-	// Default should be first
-	if !strings.HasPrefix(permStr, `{"*":"ask"`) {
-		t.Fatalf("expected default ask first, got %s", permStr)
-	}
-	// Allow patterns should be prefixed
-	if !strings.Contains(permStr, `"kubectl get *":"allow"`) {
-		t.Fatalf("expected prefixed allow pattern, got %s", permStr)
-	}
-	if !strings.Contains(permStr, `"kubectl describe *":"allow"`) {
-		t.Fatalf("expected prefixed describe allow, got %s", permStr)
-	}
-	// Deny patterns should be last (highest priority via findLast)
-	if !strings.Contains(permStr, `"kubectl delete *":"deny"`) {
-		t.Fatalf("expected prefixed deny pattern, got %s", permStr)
-	}
-}
-
-func TestBuildSourcePermission_ApprovePatterns(t *testing.T) {
-	src := SourceInfo{
-		Name:          "kubectl",
-		CommandPrefix: "kubectl ",
-		Allow:         []string{"get *"},
-		ApproveRules:  []ApprovalRuleInfo{{Pattern: "apply *"}},
-		Deny:          []string{"delete *"},
-	}
-
-	raw := buildSourcePermission(src)
-	permStr := string(raw)
-
-	// Order: default ask, allow, approve (ask), deny
-	allowIdx := strings.Index(permStr, `"kubectl get *":"allow"`)
-	approveIdx := strings.Index(permStr, `"kubectl apply *":"ask"`)
-	denyIdx := strings.Index(permStr, `"kubectl delete *":"deny"`)
-
-	if allowIdx == -1 || approveIdx == -1 || denyIdx == -1 {
-		t.Fatalf("missing expected patterns in %s", permStr)
-	}
-	if !(allowIdx < approveIdx && approveIdx < denyIdx) {
-		t.Fatalf("expected order: allow < approve < deny in %s", permStr)
-	}
-}
-
-func TestBuildSourcePermission_NoPrefix(t *testing.T) {
-	src := SourceInfo{
-		Name:  "custom",
-		Allow: []string{"read *"},
-		Deny:  []string{"write *"},
-	}
-
-	raw := buildSourcePermission(src)
-	permStr := string(raw)
-
-	// Without prefix, patterns are used as-is
-	if !strings.Contains(permStr, `"read *":"allow"`) {
-		t.Fatalf("expected unprefixed allow, got %s", permStr)
-	}
-	if !strings.Contains(permStr, `"write *":"deny"`) {
-		t.Fatalf("expected unprefixed deny, got %s", permStr)
 	}
 }
 

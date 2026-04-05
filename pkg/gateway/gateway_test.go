@@ -174,8 +174,8 @@ func TestAuditLogger_EnabledLogs(t *testing.T) {
 func TestLoadConfig_Defaults(t *testing.T) {
 	// Clear relevant env vars
 	envs := []string{
-		"GATEWAY_MODE", "GATEWAY_PORT", "TOOL_PORT", "TOOL_NAME",
-		"GATEWAY_COMMAND", "WORKSPACE_PATH",
+		"GATEWAY_PORT", "TOOL_PORT", "TOOL_NAME",
+		"GATEWAY_COMMAND",
 		"RATE_LIMIT_RPM", "RATE_LIMIT_PER_AGENT",
 		"AUDIT_ENABLED", "AUDIT_LOG_COMMANDS", "AUDIT_LOG_OUTPUT",
 	}
@@ -185,9 +185,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 	config := LoadConfig()
 
-	if config.Mode != "cli" {
-		t.Fatalf("expected default mode 'cli', got %q", config.Mode)
-	}
 	if config.Port != 8080 {
 		t.Fatalf("expected default port 8080, got %d", config.Port)
 	}
@@ -199,18 +196,6 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if config.AuditEnabled {
 		t.Fatal("expected audit disabled by default")
-	}
-}
-
-func TestLoadConfig_GatewayMode(t *testing.T) {
-	saved := saveEnv([]string{"GATEWAY_MODE"})
-	defer restoreEnv(saved)
-
-	os.Setenv("GATEWAY_MODE", "mcp")
-	config := LoadConfig()
-
-	if config.Mode != "mcp" {
-		t.Fatalf("expected mode 'mcp', got %q", config.Mode)
 	}
 }
 

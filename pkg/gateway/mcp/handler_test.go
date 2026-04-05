@@ -23,7 +23,6 @@ func testLogger() *slog.Logger {
 
 func TestNewHandler(t *testing.T) {
 	config := gateway.Config{
-		Mode:         "mcp",
 		Port:         8080,
 		ToolName:     "test-mcp",
 		Command:      "cat",
@@ -36,13 +35,10 @@ func TestNewHandler(t *testing.T) {
 	if handler == nil {
 		t.Fatal("expected non-nil handler")
 	}
-	if handler.config.Mode != "mcp" {
-		t.Fatalf("expected mode 'mcp', got %q", handler.config.Mode)
-	}
 }
 
 func TestRegister(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	mux := http.NewServeMux()
@@ -72,7 +68,7 @@ func TestRegister(t *testing.T) {
 }
 
 func TestHandleMessage_MissingSessionId(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	mux := http.NewServeMux()
@@ -92,7 +88,7 @@ func TestHandleMessage_MissingSessionId(t *testing.T) {
 }
 
 func TestHandleMessage_SessionNotFound(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	mux := http.NewServeMux()
@@ -112,7 +108,7 @@ func TestHandleMessage_SessionNotFound(t *testing.T) {
 }
 
 func TestHandleMessage_InvalidJSON(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	// Manually store a fake session so the session lookup succeeds
@@ -141,7 +137,6 @@ func TestHandleMessage_InvalidJSON(t *testing.T) {
 
 func TestHandleMessage_RateLimited(t *testing.T) {
 	config := gateway.Config{
-		Mode:         "mcp",
 		Command:      "cat",
 		RateLimitRPM: 2,
 	}
@@ -199,7 +194,7 @@ func TestHandleMessage_RateLimited(t *testing.T) {
 }
 
 func TestHandleSSE_MissingCommand(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "", Port: 8080}
+	config := gateway.Config{Command: "", Port: 8080}
 	handler := NewHandler(config, testLogger())
 
 	mux := http.NewServeMux()
@@ -218,7 +213,7 @@ func TestHandleSSE_MissingCommand(t *testing.T) {
 }
 
 func TestHandleSSE_InvalidCommand(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "/nonexistent/binary/path", Port: 8080}
+	config := gateway.Config{Command: "/nonexistent/binary/path", Port: 8080}
 	handler := NewHandler(config, testLogger())
 
 	mux := http.NewServeMux()
@@ -238,7 +233,6 @@ func TestHandleSSE_InvalidCommand(t *testing.T) {
 // Uses "cat" as the MCP server subprocess since it echoes stdin to stdout.
 func TestSSEEndToEnd(t *testing.T) {
 	config := gateway.Config{
-		Mode:    "mcp",
 		Command: "cat",
 		Port:    9999, // Use a unique port for the test
 	}
@@ -343,7 +337,7 @@ func TestSSEEndToEnd(t *testing.T) {
 }
 
 func TestSpawnMCPServer_EmptyCommand(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: ""}
+	config := gateway.Config{Command: ""}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -357,7 +351,7 @@ func TestSpawnMCPServer_EmptyCommand(t *testing.T) {
 }
 
 func TestSpawnMCPServer_InvalidCommand(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "/nonexistent/binary"}
+	config := gateway.Config{Command: "/nonexistent/binary"}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -368,7 +362,7 @@ func TestSpawnMCPServer_InvalidCommand(t *testing.T) {
 }
 
 func TestSpawnMCPServer_Success(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -399,7 +393,7 @@ func TestSpawnMCPServer_WorkingDir(t *testing.T) {
 
 	os.Setenv("HOME", "/tmp")
 
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -421,7 +415,7 @@ func TestSpawnMCPServer_WorkingDirFallback(t *testing.T) {
 
 	os.Unsetenv("HOME")
 
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -437,7 +431,7 @@ func TestSpawnMCPServer_WorkingDirFallback(t *testing.T) {
 }
 
 func TestSessionClose(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	ctx := context.Background()
@@ -468,7 +462,7 @@ func TestSessionClose(t *testing.T) {
 }
 
 func TestReadFromServer_ValidJSON(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	sess, err := handler.spawnMCPServer(context.Background(), "read-test")
@@ -501,7 +495,7 @@ func TestReadFromServer_ValidJSON(t *testing.T) {
 }
 
 func TestReadFromServer_SkipsNonJSON(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	sess, err := handler.spawnMCPServer(context.Background(), "skip-test")
@@ -534,7 +528,7 @@ func TestReadFromServer_SkipsNonJSON(t *testing.T) {
 }
 
 func TestReadFromServer_EmptyLines(t *testing.T) {
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	sess, err := handler.spawnMCPServer(context.Background(), "empty-test")
@@ -565,7 +559,7 @@ func TestReadFromServer_LargeResponse(t *testing.T) {
 	// MCP servers like @zereight/mcp-gitlab (141 tools) return tools/list
 	// responses that exceed the default 64KB bufio.Scanner buffer.
 	// This test verifies the scanner can handle responses up to 1MB.
-	config := gateway.Config{Mode: "mcp", Command: "cat"}
+	config := gateway.Config{Command: "cat"}
 	handler := NewHandler(config, testLogger())
 
 	sess, err := handler.spawnMCPServer(context.Background(), "large-response-test")
@@ -650,7 +644,6 @@ func setupDenyTestHandler(t *testing.T, denyRules string) (*Handler, func()) {
 	}
 
 	config := gateway.Config{
-		Mode:       "mcp",
 		Command:    "cat",
 		ConfigPath: dir,
 	}

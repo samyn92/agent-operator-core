@@ -1,0 +1,257 @@
+# =============================================================================
+# mcp-exec-server — Example Capability CRs
+# =============================================================================
+# These examples show how to use mcp-exec-server as a drop-in MCP alternative
+# to Container sidecars for CLI tools. The mcp-exec-server binary is baked into
+# a tool-specific image (or the base image extended with the CLI tool), and the
+# operator deploys it as an MCP server pod.
+#
+# Architecture:
+#   Agent (OpenCode) --SSE--> capability-gateway --stdio--> mcp-exec-server
+#                             (deny rules, rate limit)       (exec tool)
+#
+# Compared to Container sidecars:
+#   - No TypeScript codegen needed
+#   - No sidecar in the agent pod (separate Deployment)
+#   - Credential isolation by default (own ServiceAccount, own Secrets)
+#   - Standard MCP protocol (tools/list, tools/call)
+#   - Deny rules enforced at gateway level (same MCP deny format as k8s-mcp)
+#
+# Tradeoff vs Container sidecars:
+#   - No OpenCode permission UI (Allow/Deny/Always Allow buttons)
+#   - Needs RWX PVC if workspace sharing is required
+#   - Separate pod per capability (more resource overhead)
+
+---
+# =============================================================================
+# Example 1: kubectl via mcp-exec-server (read-only)
+# =============================================================================
+# Equivalent to gen1-cli/capability-kubectl-readonly.yaml but as an MCP server.
+# Uses a custom image that extends mcp-exec-server with kubectl installed.
+apiVersion: agents.io/v1alpha1
+kind: Capability
+metadata:
+  name: kubectl-exec
+  namespace: agents
+spec:
+  type: MCP
+
+  description: |
+    Execute kubectl commands (read-only) via MCP exec tool. Provides a single
+    "kubectl" tool that accepts full kubectl command strings. Configured for
+    read-only access — write/destructive commands are blocked by gateway deny rules.
+
+  mcp:
+    mode: server
+    command: ["/app/mcp-exec-server"]
+
+    environment:
+      TOOL_NAME: "kubectl"
+      TOOL_DESCRIPTION: "Execute kubectl commands for Kubernetes cluster inspection. Read-only — get, describe, logs, top, explain, api-resources, version, cluster-info."
+      COMMAND_PREFIX: "kubectl"
+      WORKSPACE_PATH: "/data/workspace"
+      LOG_LEVEL: "info"
+
+    server:
+      # Option A: extend mcp-exec-server with kubectl
+      # FROM ghcr.io/samyn92/mcp-exec-server:latest
+      # RUN apk add --no-cache kubectl
+      image: ghcr.io/samyn92/mcp-exec-kubectl:latest
+      serviceAccountName: kubectl-readonly
+      port: 8080
+
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+
+  permissions:
+    deny:
+      # MCP deny rules — enforced at gateway level
+      - "kubectl:command=*delete*"
+      - "kubectl:command=*apply*"
+      - "kubectl:command=*create*"
+      - "kubectl:command=*patch*"
+      - "kubectl:command=*edit*"
+      - "kubectl:command=*exec*"
+      - "kubectl:command=*port-forward*"
+      - "kubectl:command=*proxy*"
+      - "kubectl:command=*config*"
+      - "kubectl:command=*scale*"
+      - "kubectl:command=*rollout*"
+      - "kubectl:command=*drain*"
+      - "kubectl:command=*cordon*"
+      - "kubectl:command=*taint*"
+      - "kubectl:command=*label*"
+      - "kubectl:command=*annotate*"
+      - "kubectl:command=*replace*"
+      - "kubectl:command=*--force*"
+      - "kubectl:command=*--grace-period=0*"
+
+  rateLimit:
+    requestsPerMinute: 60
+  audit: true
+
+  instructions: |
+    ## kubectl (MCP exec)
+
+    Use the `kubectl` tool for all Kubernetes cluster operations. Pass the full
+    kubectl command as the `command` argument.
+
+    ### Examples
+    - `kubectl get pods -n default`
+    - `kubectl describe deployment my-app -n production`
+    - `kubectl logs my-pod -n default --tail=100`
+    - `kubectl top pods -A`
+
+    ### What is BLOCKED
+    delete, apply, create, patch, edit, exec, port-forward, scale, rollout, drain
+
+    ### Tips
+    - Use `-o wide` for more columns
+    - Use `-o yaml` for full resource specs
+    - Use `-A` for all namespaces
+    - Use `--tail=N` for log truncation
+    - Use `-l key=value` for label selectors
+
+---
+# =============================================================================
+# Example 2: helm via mcp-exec-server (read-only)
+# =============================================================================
+apiVersion: agents.io/v1alpha1
+kind: Capability
+metadata:
+  name: helm-exec
+  namespace: agents
+spec:
+  type: MCP
+
+  description: |
+    Execute helm commands (read-only) via MCP exec tool. Provides a single
+    "helm" tool for inspecting Helm releases, chart info, and repository searches.
+
+  mcp:
+    mode: server
+    command: ["/app/mcp-exec-server"]
+
+    environment:
+      TOOL_NAME: "helm"
+      TOOL_DESCRIPTION: "Execute helm commands for inspecting Helm releases and charts. Read-only — list, get, history, status, search, show."
+      COMMAND_PREFIX: "helm"
+      LOG_LEVEL: "info"
+
+    server:
+      # FROM ghcr.io/samyn92/mcp-exec-server:latest
+      # RUN apk add --no-cache helm
+      image: ghcr.io/samyn92/mcp-exec-helm:latest
+      serviceAccountName: kubectl-readonly
+      port: 8080
+
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "50m"
+        limits:
+          memory: "128Mi"
+
+  permissions:
+    deny:
+      - "helm:command=*install*"
+      - "helm:command=*upgrade*"
+      - "helm:command=*uninstall*"
+      - "helm:command=*delete*"
+      - "helm:command=*rollback*"
+      - "helm:command=*repo add*"
+      - "helm:command=*repo remove*"
+      - "helm:command=*plugin*"
+      - "helm:command=*push*"
+      - "helm:command=*package*"
+
+  rateLimit:
+    requestsPerMinute: 60
+  audit: true
+
+  instructions: |
+    ## helm (MCP exec)
+
+    Use the `helm` tool for inspecting Helm releases and charts.
+
+    ### Examples
+    - `helm list -A`
+    - `helm get values my-release -n default --all`
+    - `helm history my-release -n default`
+    - `helm status my-release -n default`
+    - `helm search repo nginx`
+
+---
+# =============================================================================
+# Example 3: terraform via mcp-exec-server (plan-only)
+# =============================================================================
+apiVersion: agents.io/v1alpha1
+kind: Capability
+metadata:
+  name: terraform-exec
+  namespace: agents
+spec:
+  type: MCP
+
+  description: |
+    Execute terraform commands via MCP exec tool. Provides a single "terraform"
+    tool for infrastructure inspection and planning. Apply operations are blocked.
+
+  mcp:
+    mode: server
+    command: ["/app/mcp-exec-server"]
+
+    environment:
+      TOOL_NAME: "terraform"
+      TOOL_DESCRIPTION: "Execute terraform commands for infrastructure inspection and planning. Supports: plan, show, state, output, validate, fmt, providers, version."
+      COMMAND_PREFIX: "terraform"
+      LOG_LEVEL: "info"
+
+    server:
+      # FROM ghcr.io/samyn92/mcp-exec-server:latest
+      # ADD https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip /tmp/
+      # RUN unzip /tmp/terraform*.zip -d /usr/local/bin/ && rm /tmp/terraform*.zip
+      image: ghcr.io/samyn92/mcp-exec-terraform:latest
+      port: 8080
+
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "512Mi"
+
+      # Terraform needs workspace access for .tf files
+      workspace:
+        enabled: true
+        storageClass: "nfs-client"
+        size: "1Gi"
+
+  permissions:
+    deny:
+      - "terraform:command=*apply*"
+      - "terraform:command=*destroy*"
+      - "terraform:command=*import*"
+      - "terraform:command=*taint*"
+      - "terraform:command=*untaint*"
+      - "terraform:command=*force-unlock*"
+
+  rateLimit:
+    requestsPerMinute: 30
+  audit: true
+
+  instructions: |
+    ## terraform (MCP exec)
+
+    Use the `terraform` tool for infrastructure inspection and planning.
+
+    ### Examples
+    - `terraform plan`
+    - `terraform show`
+    - `terraform state list`
+    - `terraform output`
+    - `terraform validate`
