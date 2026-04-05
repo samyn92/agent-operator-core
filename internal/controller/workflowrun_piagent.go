@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
+	"github.com/samyn92/agent-operator-core/internal/resources"
 	"github.com/samyn92/agent-operator-core/pkg/oci"
 )
 
@@ -104,8 +105,11 @@ func (r *WorkflowRunReconciler) createPiAgentJob(
 		return ctrl.Result{}, r.failStep(ctx, run, stepIndex, fmt.Sprintf("Failed to build env: %v", err))
 	}
 
+	// Resolve GitWorkspace references to PVC info for volume mounting
+	gitWorkspaces := r.resolveGitWorkspacesForPiAgent(ctx, piAgent)
+
 	// Build the Job
-	job := r.buildPiAgentJob(run, piAgent, step, stepIndex, env)
+	job := r.buildPiAgentJob(run, piAgent, step, stepIndex, env, gitWorkspaces)
 
 	// Set owner reference so the Job is cleaned up with the WorkflowRun
 	if err := ctrl.SetControllerReference(run, job, r.Scheme); err != nil {
@@ -225,6 +229,7 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 	step agentsv1alpha1.WorkflowStep,
 	stepIndex int,
 	env []corev1.EnvVar,
+	gitWorkspaces []resources.GitWorkspaceInfo,
 ) *batchv1.Job {
 	image := piAgent.Spec.Image
 	if image == "" {
@@ -307,6 +312,25 @@ func (r *WorkflowRunReconciler) buildPiAgentJob(
 
 	// Handle tool refs: add init containers for each toolRef OCI artifact
 	r.configureToolRefs(piAgent, &podSpec)
+
+	// Mount GitWorkspace PVCs if the PiAgent has workspaceRefs.
+	// These provide pre-cloned Git repositories managed by GitWorkspace Deployments.
+	for i, gws := range gitWorkspaces {
+		volName := fmt.Sprintf("git-workspace-%d", i)
+		podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: gws.PVCName,
+				},
+			},
+		})
+		podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: gws.MountPath,
+			ReadOnly:  gws.ReadOnly,
+		})
+	}
 
 	ttl := piAgentJobTTL
 	backoff := piAgentBackoffLimit
@@ -826,4 +850,52 @@ func extractTokenUsage(msgs interface{}) int {
 		}
 	}
 	return total
+}
+
+// resolveGitWorkspacesForPiAgent resolves a PiAgent's workspaceRefs to concrete
+// PVC mount info. Returns an empty slice if no workspaceRefs are configured or
+// if workspaces can't be resolved (non-blocking — PiAgent Jobs still run, just
+// without workspace mounts).
+func (r *WorkflowRunReconciler) resolveGitWorkspacesForPiAgent(ctx context.Context, piAgent *agentsv1alpha1.PiAgent) []resources.GitWorkspaceInfo {
+	if len(piAgent.Spec.WorkspaceRefs) == 0 {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+	var result []resources.GitWorkspaceInfo
+
+	for _, ref := range piAgent.Spec.WorkspaceRefs {
+		var ws agentsv1alpha1.GitWorkspace
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: piAgent.Namespace,
+		}, &ws); err != nil {
+			logger.Error(err, "Failed to resolve GitWorkspace for PiAgent", "workspace", ref.Name, "piAgent", piAgent.Name)
+			continue
+		}
+
+		// Only mount workspaces that are Ready
+		if ws.Status.Phase != agentsv1alpha1.GitWorkspacePhaseReady {
+			logger.Info("Skipping non-ready GitWorkspace for PiAgent", "workspace", ref.Name, "phase", ws.Status.Phase)
+			continue
+		}
+
+		// Determine mount path
+		mountPath := ref.MountPath
+		if mountPath == "" {
+			repoName := ws.Spec.Repository
+			if parts := strings.Split(repoName, "/"); len(parts) > 0 {
+				repoName = parts[len(parts)-1]
+			}
+			mountPath = fmt.Sprintf("/workspaces/%s", repoName)
+		}
+
+		result = append(result, resources.GitWorkspaceInfo{
+			PVCName:   resources.GitWorkspacePVCName(&ws),
+			MountPath: mountPath,
+			ReadOnly:  ref.Access == "readonly",
+		})
+	}
+
+	return result
 }

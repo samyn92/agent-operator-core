@@ -53,6 +53,18 @@ type MCPWorkspaceInfo struct {
 	MountPath string
 }
 
+// GitWorkspaceInfo holds resolved GitWorkspace information needed for mounting
+// workspace PVCs into the agent pod. Populated by the Agent controller after
+// resolving workspaceRefs to GitWorkspace CRs.
+type GitWorkspaceInfo struct {
+	// PVCName is the name of the GitWorkspace PVC
+	PVCName string
+	// MountPath is where the workspace is mounted (e.g., /workspaces/api)
+	MountPath string
+	// ReadOnly indicates if the workspace is mounted read-only
+	ReadOnly bool
+}
+
 // getImageConfig returns image settings from agent spec with defaults.
 // When spec.images.init is not set, the opencode image is used for the init
 // container. This enables the init container to copy pre-cached npm provider
@@ -124,7 +136,11 @@ const MCPCapabilityHashAnnotation = "agents.io/mcp-capability-hash"
 // mcpWorkspaces contains PVC information for MCP server capabilities that need
 // shared filesystem access. These PVCs are mounted into the agent pod so that both
 // the agent and the MCP server pod have access to the same workspace files.
-func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapabilityHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo) *appsv1.Deployment {
+//
+// gitWorkspaces contains PVC information for GitWorkspace CRs referenced by the
+// agent's workspaceRefs. These RWX PVCs provide pre-cloned Git repositories with
+// bare-clone + worktree architecture. Agents use them for code reading and editing.
+func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapabilityHash string, sidecars []CapabilitySidecarInfo, mcpWorkspaces []MCPWorkspaceInfo, gitWorkspaces []GitWorkspaceInfo) *appsv1.Deployment {
 	labels := commonLabels(agent)
 	replicas := int32(1)
 
@@ -211,6 +227,28 @@ func AgentDeployment(agent *agentsv1alpha1.Agent, configMapHash string, mcpCapab
 		containers[0].VolumeMounts = append(containers[0].VolumeMounts, corev1.VolumeMount{
 			Name:      volName,
 			MountPath: ws.MountPath,
+		})
+	}
+
+	// Add GitWorkspace PVC volumes.
+	// GitWorkspace CRs provide pre-cloned Git repositories via RWX PVCs managed by
+	// standalone workspace Deployments. The agent mounts them to access code — reading
+	// from the main/ worktree, creating branch worktrees under branches/, and pushing
+	// changes. The workspace's sync pod handles fetch/cleanup independently.
+	for i, gws := range gitWorkspaces {
+		volName := fmt.Sprintf("git-workspace-%d", i)
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: gws.PVCName,
+				},
+			},
+		})
+		containers[0].VolumeMounts = append(containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: gws.MountPath,
+			ReadOnly:  gws.ReadOnly,
 		})
 	}
 

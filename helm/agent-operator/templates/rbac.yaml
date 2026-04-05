@@ -20,6 +20,8 @@ rules:
       - agents
       - capabilities
       - channels
+      - gitrepoes
+      - gitworkspaces
       - piagents
       - workflows
       - workflowruns
@@ -38,6 +40,8 @@ rules:
       - agents/finalizers
       - capabilities/status
       - channels/status
+      - gitrepoes/status
+      - gitworkspaces/status
       - piagents/status
       - piagents/finalizers
       - workflows/status

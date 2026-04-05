@@ -83,6 +83,28 @@ type AgentSpec struct {
 	CapabilityRefs []CapabilityRef `json:"capabilityRefs,omitempty"`
 
 	// ==========================================================================
+	// GIT WORKSPACES
+	// ==========================================================================
+
+	// WorkspaceRefs references GitWorkspaces to mount in the agent pod.
+	// Each workspace is mounted as a volume, providing the agent with
+	// pre-cloned, operator-managed Git repository working copies.
+	//
+	// Mount path defaults to /workspaces/<repo-name> unless overridden.
+	// The workspace PVC is managed by the GitWorkspace controller —
+	// the Agent controller only mounts it.
+	//
+	// Example:
+	//   workspaceRefs:
+	//     - name: platform-api
+	//       access: readwrite
+	//     - name: shared-libs
+	//       access: readonly
+	//       mountPath: /data/libs
+	// +optional
+	WorkspaceRefs []WorkspaceRef `json:"workspaceRefs,omitempty"`
+
+	// ==========================================================================
 	// INFRASTRUCTURE
 	// ==========================================================================
 
@@ -311,6 +333,27 @@ type CapabilityRef struct {
 	// Useful when you want multiple agents to use the same capability with different names.
 	// +optional
 	Alias string `json:"alias,omitempty"`
+}
+
+// WorkspaceRef references a GitWorkspace to mount in the agent pod.
+type WorkspaceRef struct {
+	// Name is the name of the GitWorkspace resource to reference.
+	// The GitWorkspace must exist in the same namespace as the Agent.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// MountPath overrides the default mount path for this workspace.
+	// Default: /workspaces/<repo-name> (derived from the GitWorkspace's repository).
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
+
+	// Access controls how the workspace volume is mounted.
+	//   - readwrite: mounted as read-write (agent can commit, push)
+	//   - readonly: mounted as read-only (agent can read, diff, but not modify)
+	// +kubebuilder:validation:Enum=readonly;readwrite
+	// +kubebuilder:default="readwrite"
+	// +optional
+	Access string `json:"access,omitempty"`
 }
 
 // GitHubConfig provides GitHub-specific configuration.

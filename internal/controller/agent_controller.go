@@ -69,6 +69,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
+	// Check if all referenced GitWorkspaces are Ready.
+	// Block deployment until workspaces are cloned and ready — deploying without
+	// them would mount non-existent PVCs and fail to schedule.
+	if unready := r.checkWorkspaceReadiness(ctx, agent); len(unready) > 0 {
+		logger.Info("Agent blocked: waiting for workspaces", "unready", unready)
+		if err := r.updateStatusWaitingWorkspaces(ctx, agent, unready); err != nil {
+			logger.Error(err, "Failed to update status to Waiting (workspaces)")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Reconcile ConfigMap
 	if err := r.reconcileConfigMap(ctx, agent); err != nil {
 		logger.Error(err, "Failed to reconcile ConfigMap")
@@ -496,7 +508,106 @@ func (r *AgentReconciler) checkCapabilityReadiness(ctx context.Context, agent *a
 	return unready
 }
 
-// updateStatusWaiting sets the agent phase to Waiting and records which capabilities
+// checkWorkspaceReadiness checks whether all referenced GitWorkspaces exist and are Ready.
+// Returns a list of human-readable reasons for each workspace that is not ready.
+// An empty slice means all workspaces are satisfied.
+func (r *AgentReconciler) checkWorkspaceReadiness(ctx context.Context, agent *agentsv1alpha1.Agent) []string {
+	if len(agent.Spec.WorkspaceRefs) == 0 {
+		return nil
+	}
+
+	var unready []string
+	for _, ref := range agent.Spec.WorkspaceRefs {
+		ws := &agentsv1alpha1.GitWorkspace{}
+		err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: agent.Namespace}, ws)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				unready = append(unready, fmt.Sprintf("GitWorkspace %q not found", ref.Name))
+			} else {
+				unready = append(unready, fmt.Sprintf("GitWorkspace %q: lookup error: %v", ref.Name, err))
+			}
+			continue
+		}
+		if ws.Status.Phase != agentsv1alpha1.GitWorkspacePhaseReady {
+			phase := string(ws.Status.Phase)
+			if phase == "" {
+				phase = "unknown"
+			}
+			unready = append(unready, fmt.Sprintf("GitWorkspace %q is %s (not Ready)", ref.Name, phase))
+		}
+	}
+	return unready
+}
+
+// updateStatusWaitingWorkspaces sets the agent phase to Pending and records which
+// workspaces are preventing deployment.
+func (r *AgentReconciler) updateStatusWaitingWorkspaces(ctx context.Context, agent *agentsv1alpha1.Agent, reasons []string) error {
+	current := &agentsv1alpha1.Agent{}
+	if err := r.Get(ctx, types.NamespacedName{Name: agent.Name, Namespace: agent.Namespace}, current); err != nil {
+		return err
+	}
+
+	message := fmt.Sprintf("Waiting for workspaces: %s", strings.Join(reasons, "; "))
+
+	// Only update if status actually changed
+	if current.Status.Phase == agentsv1alpha1.AgentPhasePending {
+		existing := meta.FindStatusCondition(current.Status.Conditions, "WorkspacesReady")
+		if existing != nil && existing.Message == message {
+			return nil
+		}
+	}
+
+	current.Status.Phase = agentsv1alpha1.AgentPhasePending
+	current.Status.ReadyReplicas = 0
+
+	meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+		Type:               "WorkspacesReady",
+		Status:             metav1.ConditionFalse,
+		Reason:             "WorkspacesNotReady",
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	})
+
+	return r.Status().Update(ctx, current)
+}
+
+// resolveGitWorkspaces resolves an Agent's workspaceRefs to GitWorkspaceInfo
+// for mounting into the Deployment. Only called when all workspaces are Ready
+// (after checkWorkspaceReadiness passes).
+func (r *AgentReconciler) resolveGitWorkspaces(ctx context.Context, agent *agentsv1alpha1.Agent) []resources.GitWorkspaceInfo {
+	if len(agent.Spec.WorkspaceRefs) == 0 {
+		return nil
+	}
+
+	var result []resources.GitWorkspaceInfo
+	for _, ref := range agent.Spec.WorkspaceRefs {
+		var ws agentsv1alpha1.GitWorkspace
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: agent.Namespace,
+		}, &ws); err != nil {
+			continue // Should not happen after readiness check
+		}
+
+		// Determine mount path
+		mountPath := ref.MountPath
+		if mountPath == "" {
+			repoName := ws.Spec.Repository
+			if parts := strings.Split(repoName, "/"); len(parts) > 0 {
+				repoName = parts[len(parts)-1]
+			}
+			mountPath = fmt.Sprintf("/workspaces/%s", repoName)
+		}
+
+		result = append(result, resources.GitWorkspaceInfo{
+			PVCName:   resources.GitWorkspacePVCName(&ws),
+			MountPath: mountPath,
+			ReadOnly:  ref.Access == "readonly",
+		})
+	}
+	return result
+}
+
 // are preventing deployment. Called when one or more capabilityRefs cannot be resolved.
 func (r *AgentReconciler) updateStatusWaiting(ctx context.Context, agent *agentsv1alpha1.Agent, reasons []string) error {
 	current := &agentsv1alpha1.Agent{}
@@ -615,7 +726,7 @@ func (r *AgentReconciler) reconcileDeployment(ctx context.Context, agent *agents
 	desiredConfigMap := resources.AgentConfigMap(agent, resolved.Sources, resolved.MCPEntries, resolved.SkillFiles, resolved.ToolFiles, resolved.PluginFiles, resolved.PluginPackages)
 	configMapHash := resources.HashConfigMapData(desiredConfigMap.Data)
 
-	desired := resources.AgentDeployment(agent, configMapHash, resolved.MCPCapabilityHash, resolved.Sidecars, resolved.MCPWorkspaces)
+	desired := resources.AgentDeployment(agent, configMapHash, resolved.MCPCapabilityHash, resolved.Sidecars, resolved.MCPWorkspaces, r.resolveGitWorkspaces(ctx, agent))
 	if err := controllerutil.SetControllerReference(agent, desired, r.Scheme); err != nil {
 		return err
 	}
@@ -854,6 +965,11 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&agentsv1alpha1.Capability{},
 			handler.EnqueueRequestsFromMapFunc(r.findAgentsForCapability),
 		).
+		// Watch GitWorkspaces - when a workspace becomes Ready, re-reconcile blocked Agents
+		Watches(
+			&agentsv1alpha1.GitWorkspace{},
+			handler.EnqueueRequestsFromMapFunc(r.findAgentsForWorkspace),
+		).
 		Complete(r)
 }
 
@@ -875,6 +991,37 @@ func (r *AgentReconciler) findAgentsForCapability(ctx context.Context, obj clien
 		// If this agent references the changed capability, queue it for reconciliation
 		for _, ref := range agent.Spec.CapabilityRefs {
 			if ref.Name == capability.Name {
+				requests = append(requests, ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      agent.Name,
+						Namespace: agent.Namespace,
+					},
+				})
+				break
+			}
+		}
+	}
+
+	return requests
+}
+
+// findAgentsForWorkspace returns reconcile requests for Agents that reference the given GitWorkspace.
+// This re-triggers Agent reconciliation when a workspace becomes Ready (unblocking deployment).
+func (r *AgentReconciler) findAgentsForWorkspace(ctx context.Context, obj client.Object) []ctrl.Request {
+	workspace, ok := obj.(*agentsv1alpha1.GitWorkspace)
+	if !ok {
+		return nil
+	}
+
+	agentList := &agentsv1alpha1.AgentList{}
+	if err := r.List(ctx, agentList, client.InNamespace(workspace.Namespace)); err != nil {
+		return nil
+	}
+
+	var requests []ctrl.Request
+	for _, agent := range agentList.Items {
+		for _, ref := range agent.Spec.WorkspaceRefs {
+			if ref.Name == workspace.Name {
 				requests = append(requests, ctrl.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      agent.Name,

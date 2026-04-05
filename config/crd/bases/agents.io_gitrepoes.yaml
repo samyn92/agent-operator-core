@@ -1,0 +1,456 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: gitrepoes.agents.io
+spec:
+  group: agents.io
+  names:
+    kind: GitRepo
+    listKind: GitRepoList
+    plural: gitrepoes
+    singular: gitrepo
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.provider
+      name: Provider
+      type: string
+    - jsonPath: .status.repositoryCount
+      name: Repos
+      type: integer
+    - jsonPath: .status.workspaceCount
+      name: Workspaces
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          GitRepo is the Schema for the gitrepos API.
+          A GitRepo declares a set of Git repositories from a single provider.
+          It resolves patterns and wildcards into concrete repository lists,
+          centralizes credentials, and serves as the discovery registry for
+          the console and agents.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GitRepoSpec defines the desired state of GitRepo.
+            properties:
+              author:
+                description: |-
+                  Author configures the default git commit author for all workspaces
+                  created from this GitRepo. Can be overridden per GitWorkspace.
+                properties:
+                  email:
+                    description: Email is the author email for commits.
+                    type: string
+                  name:
+                    description: Name is the author name for commits.
+                    type: string
+                required:
+                - email
+                - name
+                type: object
+              credentialsRef:
+                description: |-
+                  CredentialsRef references a Secret containing the API/Git token.
+                  The secret key should contain a personal access token, project token,
+                  or app installation token with sufficient scope for the operations needed.
+
+                  For GitHub: needs "repo" scope (or fine-grained equivalent).
+                  For GitLab: needs "api" and "read_repository" scopes.
+                  For generic: the token is used in HTTPS basic auth (username is ignored).
+
+                  If not specified, repos are accessed anonymously (public repos only).
+                  GitWorkspaces that reference this GitRepo inherit these credentials
+                  unless they override with their own credentialsRef.
+                properties:
+                  key:
+                    description: Key is the key in the secret
+                    type: string
+                  name:
+                    description: Name is the name of the secret
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              domain:
+                description: |-
+                  Domain is the hostname of the Git provider instance.
+                  Defaults based on provider: "github.com", "gitlab.com", "gitea.com".
+                  Override for self-hosted instances (e.g., "gitlab.example.com").
+                type: string
+              generic:
+                description: |-
+                  Generic configures provider-agnostic repository sources.
+                  Used for self-hosted Git servers without a forge API.
+                  Required when provider is "generic".
+                properties:
+                  repositories:
+                    description: |-
+                      Repositories lists Git repository URLs.
+                      Each URL is used as-is for cloning (HTTPS or SSH).
+                    items:
+                      description: GenericRepoEntry defines a single repository in
+                        the generic source.
+                      properties:
+                        name:
+                          description: |-
+                            Name is a human-readable name for this repository.
+                            If not specified, derived from the URL.
+                          type: string
+                        url:
+                          description: URL is the Git clone URL (HTTPS or SSH).
+                          type: string
+                      required:
+                      - url
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - repositories
+                type: object
+              gitea:
+                description: |-
+                  Gitea configures Gitea-specific repository sources.
+                  Required when provider is "gitea".
+                properties:
+                  sources:
+                    description: Sources defines one or more Gitea repository sources.
+                    items:
+                      description: GiteaSource defines a single Gitea repository source.
+                      properties:
+                        owner:
+                          description: Owner is a Gitea organization or user name.
+                          type: string
+                        pattern:
+                          default: '*'
+                          description: Pattern filters repositories by name when used
+                            with owner.
+                          type: string
+                        repositories:
+                          description: Repositories lists specific repositories by
+                            full name ("owner/repo").
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - sources
+                type: object
+              github:
+                description: |-
+                  GitHub configures GitHub-specific repository sources.
+                  Required when provider is "github".
+                properties:
+                  sources:
+                    description: |-
+                      Sources defines one or more GitHub repository sources.
+                      Each source can target an organization, user, or specific repositories.
+                      All sources are resolved and merged into a single deduplicated list.
+                    items:
+                      description: |-
+                        GitHubSource defines a single GitHub repository source.
+                        Exactly one of owner or repositories must be specified.
+                      properties:
+                        archived:
+                          default: false
+                          description: Archived controls whether to include archived
+                            repositories.
+                          type: boolean
+                        owner:
+                          description: |-
+                            Owner is a GitHub organization or user name.
+                            When set, the operator lists all repositories for this owner
+                            and filters them by pattern.
+                          type: string
+                        pattern:
+                          default: '*'
+                          description: |-
+                            Pattern filters repositories by name when used with owner.
+                            Uses glob syntax (e.g., "*", "api-*", "service-??").
+                            Default: "*" (all repositories).
+                          type: string
+                        repositories:
+                          description: |-
+                            Repositories lists specific repositories by full name ("owner/repo").
+                            Use this instead of owner+pattern when you want explicit control.
+                          items:
+                            type: string
+                          type: array
+                        topics:
+                          description: Topics filters repositories to only those with
+                            ALL specified topics.
+                          items:
+                            type: string
+                          type: array
+                        visibility:
+                          default: all
+                          description: Visibility filters by repository visibility.
+                          enum:
+                          - all
+                          - public
+                          - private
+                          type: string
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - sources
+                type: object
+              gitlab:
+                description: |-
+                  GitLab configures GitLab-specific repository sources.
+                  Required when provider is "gitlab".
+                properties:
+                  sources:
+                    description: |-
+                      Sources defines one or more GitLab project sources.
+                      Each source can target a group, subgroup, user, or specific projects.
+                      All sources are resolved and merged into a single deduplicated list.
+                    items:
+                      description: |-
+                        GitLabSource defines a single GitLab project source.
+                        Specify group, user, or project to select the source type.
+                      properties:
+                        archived:
+                          default: false
+                          description: Archived controls whether to include archived
+                            projects.
+                          type: boolean
+                        group:
+                          description: |-
+                            Group is a GitLab group path (e.g., "org/platform", "company/team/backend").
+                            When set, the operator lists all projects in this group and filters by pattern.
+                          type: string
+                        pattern:
+                          default: '*'
+                          description: |-
+                            Pattern filters projects by name when used with group or user.
+                            Uses glob syntax (e.g., "*", "service-*", "lib-??").
+                            Default: "*" (all projects).
+                          type: string
+                        project:
+                          description: |-
+                            Project is a specific GitLab project path (e.g., "org/platform/api").
+                            Use this for explicit single-project references.
+                          type: string
+                        recursive:
+                          default: false
+                          description: |-
+                            Recursive includes projects from subgroups when used with group.
+                            Default: false (only direct children of the group).
+                          type: boolean
+                        topics:
+                          description: Topics filters projects to only those with
+                            ALL specified topics.
+                          items:
+                            type: string
+                          type: array
+                        user:
+                          description: |-
+                            User is a GitLab username.
+                            When set, the operator lists all projects owned by this user.
+                          type: string
+                        visibility:
+                          default: all
+                          description: Visibility filters by project visibility.
+                          enum:
+                          - all
+                          - public
+                          - internal
+                          - private
+                          type: string
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - sources
+                type: object
+              provider:
+                description: |-
+                  Provider identifies the Git hosting platform.
+                  Determines which sub-spec (github, gitlab, gitea, generic) is active,
+                  how repositories are discovered, and which forge API is used.
+                enum:
+                - github
+                - gitlab
+                - gitea
+                - generic
+                type: string
+              sshKeyRef:
+                description: |-
+                  SSHKeyRef references a Secret containing an SSH private key for Git operations.
+                  When set, Git operations use SSH transport instead of HTTPS.
+                  The secret key should contain the PEM-encoded private key.
+                properties:
+                  key:
+                    description: Key is the key in the secret
+                    type: string
+                  name:
+                    description: Name is the name of the secret
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              syncInterval:
+                default: 5m
+                description: |-
+                  SyncInterval is how often to re-resolve repository patterns and refresh
+                  the discovered repo list. Default: 5m.
+                  Uses Go duration format (e.g., "5m", "1h", "30s").
+                type: string
+            required:
+            - provider
+            type: object
+          status:
+            description: GitRepoStatus defines the observed state of GitRepo.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastSyncTime:
+                description: LastSyncTime is the last time repositories were resolved.
+                format: date-time
+                type: string
+              phase:
+                description: Phase is the current phase of the GitRepo.
+                enum:
+                - Pending
+                - Syncing
+                - Ready
+                - Failed
+                type: string
+              repositories:
+                description: |-
+                  Repositories is the resolved list of concrete repositories.
+                  Populated by the controller after resolving all patterns/sources.
+                items:
+                  description: DiscoveredRepository represents a single resolved repository.
+                  properties:
+                    archived:
+                      description: Archived indicates if the repository is archived.
+                      type: boolean
+                    cloneUrl:
+                      description: CloneURL is the HTTPS clone URL.
+                      type: string
+                    defaultBranch:
+                      description: DefaultBranch is the repository's default branch.
+                      type: string
+                    description:
+                      description: Description is the repository's description.
+                      type: string
+                    lastActivity:
+                      description: LastActivity is the last push/commit time.
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the full repository name (e.g., "org/platform/api").
+                      type: string
+                    sshUrl:
+                      description: SSHURL is the SSH clone URL (if available).
+                      type: string
+                    visibility:
+                      description: Visibility is the repository's visibility (public,
+                        private, internal).
+                      type: string
+                  required:
+                  - cloneUrl
+                  - name
+                  type: object
+                type: array
+              repositoryCount:
+                description: RepositoryCount is the total number of discovered repositories.
+                type: integer
+              workspaceCount:
+                description: WorkspaceCount is the number of GitWorkspaces referencing
+                  this GitRepo.
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

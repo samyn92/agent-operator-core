@@ -2652,6 +2652,51 @@ spec:
                     description: Write enables/disables the write tool
                     type: boolean
                 type: object
+              workspaceRefs:
+                description: |-
+                  WorkspaceRefs references GitWorkspaces to mount in the agent pod.
+                  Each workspace is mounted as a volume, providing the agent with
+                  pre-cloned, operator-managed Git repository working copies.
+
+                  Mount path defaults to /workspaces/<repo-name> unless overridden.
+                  The workspace PVC is managed by the GitWorkspace controller —
+                  the Agent controller only mounts it.
+
+                  Example:
+                    workspaceRefs:
+                      - name: platform-api
+                        access: readwrite
+                      - name: shared-libs
+                        access: readonly
+                        mountPath: /data/libs
+                items:
+                  description: WorkspaceRef references a GitWorkspace to mount in
+                    the agent pod.
+                  properties:
+                    access:
+                      default: readwrite
+                      description: |-
+                        Access controls how the workspace volume is mounted.
+                          - readwrite: mounted as read-write (agent can commit, push)
+                          - readonly: mounted as read-only (agent can read, diff, but not modify)
+                      enum:
+                      - readonly
+                      - readwrite
+                      type: string
+                    mountPath:
+                      description: |-
+                        MountPath overrides the default mount path for this workspace.
+                        Default: /workspaces/<repo-name> (derived from the GitWorkspace's repository).
+                      type: string
+                    name:
+                      description: |-
+                        Name is the name of the GitWorkspace resource to reference.
+                        The GitWorkspace must exist in the same namespace as the Agent.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
             required:
             - model
             - providers

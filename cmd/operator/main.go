@@ -16,6 +16,7 @@ import (
 
 	agentsv1alpha1 "github.com/samyn92/agent-operator-core/api/v1alpha1"
 	"github.com/samyn92/agent-operator-core/internal/controller"
+	"github.com/samyn92/agent-operator-core/internal/forge"
 	"github.com/samyn92/agent-operator-core/internal/webhook"
 )
 
@@ -119,6 +120,24 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PiAgent")
+		os.Exit(1)
+	}
+
+	if err = (&controller.GitRepoReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		GitHubClient: forge.NewGitHubClient(),
+		GitLabClient: forge.NewGitLabClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitRepo")
+		os.Exit(1)
+	}
+
+	if err = (&controller.GitWorkspaceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitWorkspace")
 		os.Exit(1)
 	}
 

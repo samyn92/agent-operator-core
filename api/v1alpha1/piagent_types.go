@@ -85,6 +85,27 @@ type PiAgentSpec struct {
 	ToolRefs []OCIArtifactRef `json:"toolRefs,omitempty"`
 
 	// ==========================================================================
+	// GIT WORKSPACES
+	// ==========================================================================
+
+	// WorkspaceRefs references GitWorkspaces to mount in the Job pod.
+	// Each workspace is mounted as a volume at /workspaces/<repo-name>,
+	// providing the PiAgent with pre-cloned, operator-managed Git repository
+	// working copies. This eliminates the need to clone at Job startup,
+	// resulting in faster startup and less bandwidth usage.
+	//
+	// When a Workflow creates a WorkflowRun, it can also dynamically create
+	// ephemeral GitWorkspaces (e.g., for PR review of a specific ref) that
+	// are cleaned up after the Job completes.
+	//
+	// Example:
+	//   workspaceRefs:
+	//     - name: platform-api
+	//       access: readwrite
+	// +optional
+	WorkspaceRefs []WorkspaceRef `json:"workspaceRefs,omitempty"`
+
+	// ==========================================================================
 	// ENVIRONMENT
 	// ==========================================================================
 
