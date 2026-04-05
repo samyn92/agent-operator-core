@@ -853,9 +853,10 @@ func extractTokenUsage(msgs interface{}) int {
 }
 
 // resolveGitWorkspacesForPiAgent resolves a PiAgent's workspaceRefs to concrete
-// PVC mount info. Returns an empty slice if no workspaceRefs are configured or
-// if workspaces can't be resolved (non-blocking — PiAgent Jobs still run, just
-// without workspace mounts).
+// PVC mount info. Supports both explicit (name) and agent-driven (gitRepo+repository)
+// modes. For agent-driven refs, auto-creates the GitWorkspace if it doesn't exist.
+// Returns an empty slice if no workspaceRefs are configured or if workspaces
+// can't be resolved (non-blocking — PiAgent Jobs still run, just without workspace mounts).
 func (r *WorkflowRunReconciler) resolveGitWorkspacesForPiAgent(ctx context.Context, piAgent *agentsv1alpha1.PiAgent) []resources.GitWorkspaceInfo {
 	if len(piAgent.Spec.WorkspaceRefs) == 0 {
 		return nil
@@ -865,18 +866,27 @@ func (r *WorkflowRunReconciler) resolveGitWorkspacesForPiAgent(ctx context.Conte
 	var result []resources.GitWorkspaceInfo
 
 	for _, ref := range piAgent.Spec.WorkspaceRefs {
+		// For agent-driven refs, ensure the GitWorkspace exists
+		if IsAgentDriven(ref) {
+			if err := EnsureGitWorkspace(ctx, r.Client, ref, piAgent.Namespace); err != nil {
+				logger.Error(err, "Failed to ensure GitWorkspace for PiAgent", "repository", ref.Repository, "piAgent", piAgent.Name)
+				continue
+			}
+		}
+
+		wsName := WorkspaceRefName(ref)
 		var ws agentsv1alpha1.GitWorkspace
 		if err := r.Get(ctx, types.NamespacedName{
-			Name:      ref.Name,
+			Name:      wsName,
 			Namespace: piAgent.Namespace,
 		}, &ws); err != nil {
-			logger.Error(err, "Failed to resolve GitWorkspace for PiAgent", "workspace", ref.Name, "piAgent", piAgent.Name)
+			logger.Error(err, "Failed to resolve GitWorkspace for PiAgent", "workspace", wsName, "piAgent", piAgent.Name)
 			continue
 		}
 
 		// Only mount workspaces that are Ready
 		if ws.Status.Phase != agentsv1alpha1.GitWorkspacePhaseReady {
-			logger.Info("Skipping non-ready GitWorkspace for PiAgent", "workspace", ref.Name, "phase", ws.Status.Phase)
+			logger.Info("Skipping non-ready GitWorkspace for PiAgent", "workspace", wsName, "phase", ws.Status.Phase)
 			continue
 		}
 

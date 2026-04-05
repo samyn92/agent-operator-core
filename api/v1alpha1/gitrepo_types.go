@@ -140,6 +140,14 @@ type GitRepoSpec struct {
 	// +kubebuilder:default="5m"
 	// +optional
 	SyncInterval string `json:"syncInterval,omitempty"`
+
+	// WorkspaceDefaults provides default configuration for GitWorkspaces
+	// that are auto-created by agents in agent-driven mode.
+	// When an Agent or PiAgent references this GitRepo with a repository name,
+	// the operator creates a GitWorkspace using these defaults.
+	// Individual fields can be overridden per-workspace if needed.
+	// +optional
+	WorkspaceDefaults *GitRepoWorkspaceDefaults `json:"workspaceDefaults,omitempty"`
 }
 
 // =============================================================================
@@ -306,6 +314,33 @@ type GenericRepoEntry struct {
 	// If not specified, derived from the URL.
 	// +optional
 	Name string `json:"name,omitempty"`
+}
+
+// =============================================================================
+// WORKSPACE DEFAULTS (for agent-driven auto-creation)
+// =============================================================================
+
+// GitRepoWorkspaceDefaults provides default configuration for auto-created
+// GitWorkspaces. When an Agent or PiAgent uses agent-driven mode (gitRepo +
+// repository), the operator creates a GitWorkspace using these defaults.
+type GitRepoWorkspaceDefaults struct {
+	// Storage configures the PVC for auto-created workspaces.
+	// +optional
+	Storage *GitWorkspaceStorage `json:"storage,omitempty"`
+
+	// Sync configures automatic fetching for auto-created workspaces.
+	// +optional
+	Sync *GitSyncConfig `json:"sync,omitempty"`
+
+	// Clone configures initial clone behavior for auto-created workspaces.
+	// +optional
+	Clone *GitCloneConfig `json:"clone,omitempty"`
+
+	// TTL sets a time-to-live on auto-created workspaces.
+	// When set, workspaces with no consumers are garbage collected after this duration.
+	// Uses Go duration format (e.g., "24h", "168h").
+	// +optional
+	TTL string `json:"ttl,omitempty"`
 }
 
 // =============================================================================

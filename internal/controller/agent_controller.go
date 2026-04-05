@@ -509,6 +509,7 @@ func (r *AgentReconciler) checkCapabilityReadiness(ctx context.Context, agent *a
 }
 
 // checkWorkspaceReadiness checks whether all referenced GitWorkspaces exist and are Ready.
+// For agent-driven refs (gitRepo + repository), it auto-creates the GitWorkspace first.
 // Returns a list of human-readable reasons for each workspace that is not ready.
 // An empty slice means all workspaces are satisfied.
 func (r *AgentReconciler) checkWorkspaceReadiness(ctx context.Context, agent *agentsv1alpha1.Agent) []string {
@@ -518,13 +519,22 @@ func (r *AgentReconciler) checkWorkspaceReadiness(ctx context.Context, agent *ag
 
 	var unready []string
 	for _, ref := range agent.Spec.WorkspaceRefs {
+		// For agent-driven refs, ensure the GitWorkspace exists (auto-create if needed)
+		if IsAgentDriven(ref) {
+			if err := EnsureGitWorkspace(ctx, r.Client, ref, agent.Namespace); err != nil {
+				unready = append(unready, fmt.Sprintf("GitWorkspace for %q: %v", ref.Repository, err))
+				continue
+			}
+		}
+
+		wsName := WorkspaceRefName(ref)
 		ws := &agentsv1alpha1.GitWorkspace{}
-		err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: agent.Namespace}, ws)
+		err := r.Get(ctx, types.NamespacedName{Name: wsName, Namespace: agent.Namespace}, ws)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				unready = append(unready, fmt.Sprintf("GitWorkspace %q not found", ref.Name))
+				unready = append(unready, fmt.Sprintf("GitWorkspace %q not found", wsName))
 			} else {
-				unready = append(unready, fmt.Sprintf("GitWorkspace %q: lookup error: %v", ref.Name, err))
+				unready = append(unready, fmt.Sprintf("GitWorkspace %q: lookup error: %v", wsName, err))
 			}
 			continue
 		}
@@ -533,7 +543,7 @@ func (r *AgentReconciler) checkWorkspaceReadiness(ctx context.Context, agent *ag
 			if phase == "" {
 				phase = "unknown"
 			}
-			unready = append(unready, fmt.Sprintf("GitWorkspace %q is %s (not Ready)", ref.Name, phase))
+			unready = append(unready, fmt.Sprintf("GitWorkspace %q is %s (not Ready)", wsName, phase))
 		}
 	}
 	return unready
@@ -572,8 +582,9 @@ func (r *AgentReconciler) updateStatusWaitingWorkspaces(ctx context.Context, age
 }
 
 // resolveGitWorkspaces resolves an Agent's workspaceRefs to GitWorkspaceInfo
-// for mounting into the Deployment. Only called when all workspaces are Ready
-// (after checkWorkspaceReadiness passes).
+// for mounting into the Deployment. Supports both explicit (name) and
+// agent-driven (gitRepo+repository) modes. Only called when all workspaces
+// are Ready (after checkWorkspaceReadiness passes).
 func (r *AgentReconciler) resolveGitWorkspaces(ctx context.Context, agent *agentsv1alpha1.Agent) []resources.GitWorkspaceInfo {
 	if len(agent.Spec.WorkspaceRefs) == 0 {
 		return nil
@@ -581,9 +592,10 @@ func (r *AgentReconciler) resolveGitWorkspaces(ctx context.Context, agent *agent
 
 	var result []resources.GitWorkspaceInfo
 	for _, ref := range agent.Spec.WorkspaceRefs {
+		wsName := WorkspaceRefName(ref)
 		var ws agentsv1alpha1.GitWorkspace
 		if err := r.Get(ctx, types.NamespacedName{
-			Name:      ref.Name,
+			Name:      wsName,
 			Namespace: agent.Namespace,
 		}, &ws); err != nil {
 			continue // Should not happen after readiness check
@@ -1007,6 +1019,7 @@ func (r *AgentReconciler) findAgentsForCapability(ctx context.Context, obj clien
 
 // findAgentsForWorkspace returns reconcile requests for Agents that reference the given GitWorkspace.
 // This re-triggers Agent reconciliation when a workspace becomes Ready (unblocking deployment).
+// Matches both explicit refs (by name) and agent-driven refs (by generated name).
 func (r *AgentReconciler) findAgentsForWorkspace(ctx context.Context, obj client.Object) []ctrl.Request {
 	workspace, ok := obj.(*agentsv1alpha1.GitWorkspace)
 	if !ok {
@@ -1021,7 +1034,7 @@ func (r *AgentReconciler) findAgentsForWorkspace(ctx context.Context, obj client
 	var requests []ctrl.Request
 	for _, agent := range agentList.Items {
 		for _, ref := range agent.Spec.WorkspaceRefs {
-			if ref.Name == workspace.Name {
+			if WorkspaceRefName(ref) == workspace.Name {
 				requests = append(requests, ctrl.Request{
 					NamespacedName: types.NamespacedName{
 						Name:      agent.Name,

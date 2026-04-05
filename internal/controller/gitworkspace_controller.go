@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -673,6 +674,7 @@ func (r *GitWorkspaceReconciler) determinePhase(ctx context.Context, ws *agentsv
 }
 
 // findConsumers lists all Agents and PiAgents that reference this workspace.
+// Matches both explicit refs (by name) and agent-driven refs (by generated name).
 func (r *GitWorkspaceReconciler) findConsumers(ctx context.Context, ws *agentsv1alpha1.GitWorkspace) ([]agentsv1alpha1.GitWorkspaceConsumer, error) {
 	var consumers []agentsv1alpha1.GitWorkspaceConsumer
 
@@ -683,7 +685,7 @@ func (r *GitWorkspaceReconciler) findConsumers(ctx context.Context, ws *agentsv1
 	}
 	for _, agent := range agents.Items {
 		for _, ref := range agent.Spec.WorkspaceRefs {
-			if ref.Name == ws.Name {
+			if WorkspaceRefName(ref) == ws.Name {
 				access := ref.Access
 				if access == "" {
 					access = "readwrite"
@@ -704,7 +706,7 @@ func (r *GitWorkspaceReconciler) findConsumers(ctx context.Context, ws *agentsv1
 	}
 	for _, piAgent := range piAgents.Items {
 		for _, ref := range piAgent.Spec.WorkspaceRefs {
-			if ref.Name == ws.Name {
+			if WorkspaceRefName(ref) == ws.Name {
 				access := ref.Access
 				if access == "" {
 					access = "readwrite"
@@ -851,11 +853,11 @@ func (r *GitWorkspaceReconciler) findWorkspacesForConsumer(ctx context.Context, 
 	switch consumer := obj.(type) {
 	case *agentsv1alpha1.Agent:
 		for _, ref := range consumer.Spec.WorkspaceRefs {
-			workspaceNames = append(workspaceNames, ref.Name)
+			workspaceNames = append(workspaceNames, WorkspaceRefName(ref))
 		}
 	case *agentsv1alpha1.PiAgent:
 		for _, ref := range consumer.Spec.WorkspaceRefs {
-			workspaceNames = append(workspaceNames, ref.Name)
+			workspaceNames = append(workspaceNames, WorkspaceRefName(ref))
 		}
 	default:
 		return nil
@@ -956,4 +958,106 @@ func parseDuration(s string, defaultDuration time.Duration) time.Duration {
 		return defaultDuration
 	}
 	return d
+}
+
+// =============================================================================
+// AGENT-DRIVEN WORKSPACE AUTO-CREATION
+// =============================================================================
+
+// AutoCreatedByLabel marks GitWorkspaces that were auto-created by the operator
+// in agent-driven mode. The value is "true".
+const AutoCreatedByLabel = "agents.io/auto-created"
+
+// WorkspaceRefName returns the deterministic GitWorkspace name for a WorkspaceRef.
+// For explicit mode (ref.Name set), returns the name directly.
+// For agent-driven mode (ref.GitRepo + ref.Repository), generates a deterministic
+// name from the repository path: "samyn92/agent-operator-core" -> "samyn92-agent-operator-core".
+// Names are truncated to fit Kubernetes 63-char limit.
+func WorkspaceRefName(ref agentsv1alpha1.WorkspaceRef) string {
+	if ref.Name != "" {
+		return ref.Name
+	}
+	// Generate deterministic name from repository path
+	name := strings.ReplaceAll(ref.Repository, "/", "-")
+	name = strings.ReplaceAll(name, ".", "-")
+	name = strings.ToLower(name)
+	// Kubernetes names max 63 chars
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	// Trim trailing hyphens
+	name = strings.TrimRight(name, "-")
+	return name
+}
+
+// IsAgentDriven returns true if the WorkspaceRef uses agent-driven mode
+// (gitRepo + repository) rather than explicit mode (name).
+func IsAgentDriven(ref agentsv1alpha1.WorkspaceRef) bool {
+	return ref.GitRepo != "" && ref.Repository != ""
+}
+
+// EnsureGitWorkspace ensures a GitWorkspace exists for an agent-driven WorkspaceRef.
+// If the GitWorkspace already exists, it returns nil (idempotent).
+// If it doesn't exist, it creates one using defaults from the GitRepo's workspaceDefaults.
+//
+// Returns:
+//   - nil if the GitWorkspace was created or already exists
+//   - error if the GitRepo can't be found, the repository isn't discovered, or creation fails
+func EnsureGitWorkspace(ctx context.Context, c client.Client, ref agentsv1alpha1.WorkspaceRef, namespace string) error {
+	wsName := WorkspaceRefName(ref)
+	logger := log.FromContext(ctx)
+
+	// Check if workspace already exists
+	var existing agentsv1alpha1.GitWorkspace
+	if err := c.Get(ctx, types.NamespacedName{Name: wsName, Namespace: namespace}, &existing); err == nil {
+		return nil // Already exists
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("checking GitWorkspace %q: %w", wsName, err)
+	}
+
+	// Fetch the referenced GitRepo
+	var gitRepo agentsv1alpha1.GitRepo
+	if err := c.Get(ctx, types.NamespacedName{Name: ref.GitRepo, Namespace: namespace}, &gitRepo); err != nil {
+		return fmt.Errorf("GitRepo %q not found: %w", ref.GitRepo, err)
+	}
+
+	// Build the GitWorkspace spec using defaults from the GitRepo
+	ws := &agentsv1alpha1.GitWorkspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wsName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				AutoCreatedByLabel:  "true",
+				"agents.io/gitrepo": ref.GitRepo,
+			},
+		},
+		Spec: agentsv1alpha1.GitWorkspaceSpec{
+			GitRepoRef: ref.GitRepo,
+			Repository: ref.Repository,
+		},
+	}
+
+	// Apply defaults from GitRepo.workspaceDefaults
+	if defaults := gitRepo.Spec.WorkspaceDefaults; defaults != nil {
+		ws.Spec.Storage = defaults.Storage
+		ws.Spec.Sync = defaults.Sync
+		ws.Spec.Clone = defaults.Clone
+		ws.Spec.TTL = defaults.TTL
+	}
+
+	// Inherit author from GitRepo if not set by defaults
+	if ws.Spec.Author == nil && gitRepo.Spec.Author != nil {
+		ws.Spec.Author = gitRepo.Spec.Author
+	}
+
+	if err := c.Create(ctx, ws); err != nil {
+		if errors.IsAlreadyExists(err) {
+			return nil // Race condition: another reconcile created it
+		}
+		return fmt.Errorf("creating GitWorkspace %q: %w", wsName, err)
+	}
+
+	logger.Info("Auto-created GitWorkspace for agent-driven ref",
+		"workspace", wsName, "gitRepo", ref.GitRepo, "repository", ref.Repository)
+	return nil
 }

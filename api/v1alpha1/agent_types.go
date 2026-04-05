@@ -86,21 +86,28 @@ type AgentSpec struct {
 	// GIT WORKSPACES
 	// ==========================================================================
 
-	// WorkspaceRefs references GitWorkspaces to mount in the agent pod.
+	// WorkspaceRefs references Git workspaces to mount in the agent pod.
 	// Each workspace is mounted as a volume, providing the agent with
 	// pre-cloned, operator-managed Git repository working copies.
 	//
-	// Mount path defaults to /workspaces/<repo-name> unless overridden.
-	// The workspace PVC is managed by the GitWorkspace controller —
-	// the Agent controller only mounts it.
+	// Supports two modes:
 	//
-	// Example:
+	// Explicit mode — reference an existing GitWorkspace by name:
 	//   workspaceRefs:
 	//     - name: platform-api
 	//       access: readwrite
-	//     - name: shared-libs
+	//
+	// Agent-driven mode — reference a GitRepo + repository, operator auto-creates the GitWorkspace:
+	//   workspaceRefs:
+	//     - gitRepo: samyn92-github
+	//       repository: samyn92/agent-operator-core
+	//     - gitRepo: samyn92-github
+	//       repository: samyn92/agent-tools
 	//       access: readonly
-	//       mountPath: /data/libs
+	//
+	// In agent-driven mode, the operator creates a GitWorkspace automatically
+	// using defaults from the GitRepo's workspaceDefaults (or sensible operator defaults).
+	// Multiple agents referencing the same gitRepo+repository share one GitWorkspace.
 	// +optional
 	WorkspaceRefs []WorkspaceRef `json:"workspaceRefs,omitempty"`
 
@@ -335,12 +342,32 @@ type CapabilityRef struct {
 	Alias string `json:"alias,omitempty"`
 }
 
-// WorkspaceRef references a GitWorkspace to mount in the agent pod.
+// WorkspaceRef references a Git workspace to mount in the agent/piagent pod.
+// Supports two modes:
+//   - Explicit: set name to reference an existing GitWorkspace CR.
+//   - Agent-driven: set gitRepo + repository, and the operator auto-creates
+//     the GitWorkspace on demand. The auto-created workspace uses defaults
+//     from the GitRepo's workspaceDefaults field.
 type WorkspaceRef struct {
-	// Name is the name of the GitWorkspace resource to reference.
-	// The GitWorkspace must exist in the same namespace as the Agent.
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
+	// Name references an existing GitWorkspace by name (explicit mode).
+	// The GitWorkspace must exist in the same namespace.
+	// Mutually exclusive with gitRepo+repository.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// GitRepo references a GitRepo that provides credentials and the
+	// discovered repository list (agent-driven mode).
+	// Must be used together with repository.
+	// Mutually exclusive with name.
+	// +optional
+	GitRepo string `json:"gitRepo,omitempty"`
+
+	// Repository is the full repository name to clone (agent-driven mode).
+	// Must match a repository discovered by the referenced GitRepo.
+	// Format: "owner/repo" (GitHub) or "group/project" (GitLab).
+	// Must be used together with gitRepo.
+	// +optional
+	Repository string `json:"repository,omitempty"`
 
 	// MountPath overrides the default mount path for this workspace.
 	// Default: /workspaces/<repo-name> (derived from the GitWorkspace's repository).

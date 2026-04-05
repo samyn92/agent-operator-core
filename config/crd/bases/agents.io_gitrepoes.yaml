@@ -328,6 +328,105 @@ spec:
                   the discovered repo list. Default: 5m.
                   Uses Go duration format (e.g., "5m", "1h", "30s").
                 type: string
+              workspaceDefaults:
+                description: |-
+                  WorkspaceDefaults provides default configuration for GitWorkspaces
+                  that are auto-created by agents in agent-driven mode.
+                  When an Agent or PiAgent references this GitRepo with a repository name,
+                  the operator creates a GitWorkspace using these defaults.
+                  Individual fields can be overridden per-workspace if needed.
+                properties:
+                  clone:
+                    description: Clone configures initial clone behavior for auto-created
+                      workspaces.
+                    properties:
+                      depth:
+                        default: 0
+                        description: |-
+                          Depth limits the clone history. 0 means full clone.
+                          Shallow clones (depth > 0) are faster but limit log/blame operations.
+                          For workspaces where agents need full history (e.g., for git log analysis), use 0.
+                          For review-only workspaces, a shallow clone (depth: 50) is sufficient.
+                        type: integer
+                      lfs:
+                        default: false
+                        description: LFS enables Git Large File Storage support.
+                        type: boolean
+                      submodules:
+                        default: none
+                        description: Submodules controls whether to initialize and
+                          update submodules.
+                        enum:
+                        - none
+                        - shallow
+                        - recursive
+                        type: string
+                    type: object
+                  storage:
+                    description: Storage configures the PVC for auto-created workspaces.
+                    properties:
+                      accessMode:
+                        default: ReadWriteMany
+                        description: |-
+                          AccessMode controls PVC access mode.
+                          Default: ReadWriteMany (supports multi-agent sharing).
+                        enum:
+                        - ReadWriteOnce
+                        - ReadWriteMany
+                        type: string
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        default: 10Gi
+                        description: |-
+                          Size is the PVC storage size. Default: "10Gi".
+                          Consider the repo size + number of concurrent worktrees.
+                          Each worktree adds working-tree files but shares git objects.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClass:
+                        description: |-
+                          StorageClass is the Kubernetes storage class.
+                          For shared workspaces (multiple agents), this MUST support ReadWriteMany (RWX).
+                          Examples: NFS, CephFS, Longhorn RWX, EFS.
+                          For single-agent workspaces, ReadWriteOnce (RWO) is sufficient.
+                        type: string
+                    type: object
+                  sync:
+                    description: Sync configures automatic fetching for auto-created
+                      workspaces.
+                    properties:
+                      interval:
+                        default: 5m
+                        description: |-
+                          Interval is how often the sidecar runs `git fetch --all` on the bare clone.
+                          Uses Go duration format. Default: "5m".
+                          The fetch only updates remote refs in the bare clone — it never modifies
+                          any worktree's working directory. Agents see updated remote tracking
+                          branches and decide when to merge/rebase.
+                        type: string
+                      mainWorktreeStrategy:
+                        default: reset
+                        description: |-
+                          MainWorktreeStrategy controls how the default-branch worktree (/workspace/main/)
+                          stays in sync after a fetch.
+                            - reset: Hard reset to origin/<default-branch> after each fetch.
+                              This keeps the main worktree as a read-only reference that always
+                              reflects the latest remote state. Safe because agents never commit to main.
+                            - none: Don't touch the main worktree. Agents manually update it.
+                        enum:
+                        - reset
+                        - none
+                        type: string
+                    type: object
+                  ttl:
+                    description: |-
+                      TTL sets a time-to-live on auto-created workspaces.
+                      When set, workspaces with no consumers are garbage collected after this duration.
+                      Uses Go duration format (e.g., "24h", "168h").
+                    type: string
+                type: object
             required:
             - provider
             type: object
